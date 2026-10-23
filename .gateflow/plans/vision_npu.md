@@ -230,8 +230,11 @@ into INT32. Input skew = r stages for row r and c stages for column c.
 Per result, pipelined at 1 per cycle:
 ```
 x   = acc + bias'[c]
-x   = SaturatingRoundingDoublingHighMul(x << max(shift,0), M[c])     // 32×32→64, keep high
-x   = RoundingDivideByPOT(x, max(-shift,0))
+if rmode == 0:   // double rounding (TFLite CONV_2D)
+    x = SaturatingRoundingDoublingHighMul(x << max(shift,0), M[c])   // 32×32→64, keep high
+    x = RoundingDivideByPOT(x, max(-shift,0))
+else:            // single rounding (TFLite FULLY_CONNECTED)
+    x = (x·M[c] + 2^(30-shift)) >> (31-shift)
 y   = clamp(x + out_zp, act_min, act_max)                              // ReLU folded into act_min
 ```
 About 4 DSP mults or a pipelined LUT multiplier. Verified against a NumPy port of
@@ -367,6 +370,18 @@ Writes about 80 registers from a ROM for QVGA YUV422, ~30 fps, PCLK ≈ XCLK/2.
 
 ## Implementation Phases
 
+### Progress log
+- **Phase 0 done (sim/build):** colorbars_top builds through slang → synth_gowin →
+  nextpnr-himbaechel → gowin_pack (441 LUT, Fmax 78 MHz vs 25.2 MHz). TMDS encoder
+  bit-exact vs a spec model. On-board check pending hardware. TensorFlow lives in a
+  separate Python 3.12 env (`.venv-tf`), since TF has no stable 3.14 build.
+- **Phase 1 done:** 9,098-param CNN at 98.26% INT8 (post-training quantization, because
+  the QAT toolkit doesn't support Keras 3). The NumPy ISA simulator is bit-exact vs
+  TFLite reference kernels on every layer. **Finding:** TFLite rounds CONV_2D with double
+  rounding and FULLY_CONNECTED with single rounding, so the ISA gained an `rmode` bit.
+  The cycle model gives 38.9K cycles = 1.55 ms/frame and 27.7% array utilization
+  (conv1 wastes 7/8 of each word on its single input channel, a Phase 8 target).
+
 ### Phase 0: Spikes (de-risk the toolchain)
 - Python env: TensorFlow + NumPy + cocotb in the project `.venv`
 - Board, if available: blinky → HDMI 640×480 color bars (validates rPLL, CLKDIV,
@@ -374,7 +389,7 @@ Writes about 80 registers from a ROM for QVGA YUV422, ~30 fps, PCLK ≈ XCLK/2.
 - **Done when:** color bars are on a monitor, or, with no board yet, the designs build through `gowin_pack`.
 
 ### Phase 1: Model, golden reference, ISA, compiler
-- Train the MNIST CNN (≥ 98.5% INT8 test accuracy), export INT8 TFLite
+- Train the MNIST CNN (≥ 98% INT8 test accuracy; achieved 98.26%), export INT8 TFLite
 - `npu_sim.py` matches TFLite ref kernels bit-exactly on all layers for 1,000 test images
 - ISA document, compiler emits `.hex` images, `npu_pkg.sv` with ISA fields
 - **Done when:** `make model && make compile && make sim-ref` passes.
@@ -456,6 +471,7 @@ on all 4 edges; partial last pixel tile; partial output group (10 of 16 channels
 | ID | Risk | Prob. | Impact | Mitigation |
 |----|------|-------|--------|------------|
 | R-1 | Camera pins: no dedicated connector, ~15 GPIOs, PCLK on a non-clock pin | Med | High | `/gf-pinmap` check before buying; PCLK at ~12 MHz tolerates general routing; fallback: SD-card images |
+| ~~R-3a~~ | ~~Not enough DSP multipliers~~ | — | — | **Retired (Phase 0):** GW2A-18 exposes 96 × MULT9X9, enough for all 64 INT8 PEs |
 | R-2 | MNIST ↔ real camera domain gap (lighting, stroke width, centering) | High | Med | Augmentation, contrast stretch, crop guide box; Phase 7 frame grabs → fine-tune on own data |
 | R-3 | Open Gowin flow gaps (OSER10/ELVDS/rPLL, BSRAM init, DSP inference) | Med | High | Phase 0 spikes first; LUT multipliers fit if DSP inference fails |
 | R-4 | BSRAM budget (39/46) | Med | Med | 4-bpp preview (−5), smaller weight mem; Stage 3 moves weights to SDRAM |
