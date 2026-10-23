@@ -44,6 +44,12 @@ def test_param_roundtrip():
         assert isa.decode_param(isa.encode_param(*p)) == p
 
 
+def test_rtl_package_in_sync():
+    from npu.gen_pkg import render
+    pkg = ROOT / "rtl" / "npu" / "npu_pkg.sv"
+    assert pkg.read_text() == render(), "rtl/npu/npu_pkg.sv is stale: run `make pkg`"
+
+
 def test_field_overflow_rejected():
     with pytest.raises(ValueError):
         Instr(Op.CONV, in_h=128).encode()
