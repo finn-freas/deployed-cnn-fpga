@@ -1,0 +1,64 @@
+# Tang Nano 20K build: yosys -> nextpnr-himbaechel -> gowin_pack -> openFPGALoader
+#   make TOP=colorbars_top          build bitstream
+#   make TOP=colorbars_top flash    program SRAM (volatile)
+#   make TOP=colorbars_top prog     program flash (persistent)
+
+SHELL  := /bin/bash
+OSS    ?= $(HOME)/oss-cad-suite
+ENV    := source $(OSS)/environment &&
+ROOT   := ../..
+TOP    ?= colorbars_top
+BUILD  := build/$(TOP)
+CST    := tangnano20k.cst
+DEVICE := GW2AR-LV18QN88C8/I7
+FAMILY := GW2A-18C
+FREQ_MHZ ?= 25.2
+
+# Vendor-primitive wrappers: read by Yosys's native frontend (understands Gowin cells).
+# Everything else: read by yosys-slang (full SystemVerilog).
+VENDOR_SRCS := \
+	$(ROOT)/rtl/gowin/gw_clk_gen.sv \
+	$(ROOT)/rtl/gowin/gw_dvi_phy.sv
+
+# Per-top source lists
+SRCS_colorbars_top := \
+	$(ROOT)/rtl/common/reset_sync.sv \
+	$(ROOT)/rtl/video/video_timing.sv \
+	$(ROOT)/rtl/video/tmds_encoder.sv \
+	$(ROOT)/rtl/video/dvi_tx.sv \
+	$(ROOT)/rtl/video/test_pattern.sv \
+	colorbars_top.sv
+
+SRCS := $(SRCS_$(TOP))
+
+.PHONY: all flash prog clean
+
+all: $(BUILD)/$(TOP).fs
+
+$(BUILD)/$(TOP)-synth.json: $(SRCS) $(VENDOR_SRCS)
+	@mkdir -p $(BUILD)
+	$(ENV) yosys -m slang -q -l $(BUILD)/yosys.log -p "\
+		read_verilog -sv $(VENDOR_SRCS); \
+		read_slang --top $(TOP) $(SRCS); \
+		synth_gowin -top $(TOP) -family gw2a -json $@"
+
+$(BUILD)/$(TOP)-pnr.json: $(BUILD)/$(TOP)-synth.json $(CST)
+	$(ENV) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
+		--vopt family=$(FAMILY) --vopt cst=$(CST) --report $(BUILD)/report.json \
+		--freq $(FREQ_MHZ) -l $(BUILD)/nextpnr.log --quiet
+
+$(BUILD)/$(TOP).fs: $(BUILD)/$(TOP)-pnr.json
+	$(ENV) gowin_pack -c -d $(FAMILY) -o $@ $< 2> >(grep -v "UserWarning\|warnings.warn" >&2)
+	@echo "--- $(TOP): timing (target $(FREQ_MHZ) MHz) ---"
+	@grep "Max frequency for clock" $(BUILD)/nextpnr.log | sed 's/^Info: */  /' | sort -u
+	@echo "--- utilization ---"
+	@grep -E "^Info:\s+(LUT4|ALU|DFF|BSRAM|MULT9X9|MULT18X18|RAM16SDP4|IOB):" $(BUILD)/nextpnr.log | sed 's/^Info:\s*/  /'
+
+flash: $(BUILD)/$(TOP).fs
+	$(ENV) openFPGALoader -b tangnano20k $<
+
+prog: $(BUILD)/$(TOP).fs
+	$(ENV) openFPGALoader -b tangnano20k -f $<
+
+clean:
+	rm -rf build
