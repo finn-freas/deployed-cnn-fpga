@@ -1,0 +1,13 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Simulation / build outputs
+sim_build/
+results.xml
+*.vcd
+*.fst
+build/
+*.fs
+*.json.pnr
