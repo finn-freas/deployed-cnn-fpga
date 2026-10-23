@@ -7,6 +7,7 @@ __pycache__/
 # Simulation / build outputs
 sim_build/
 results.xml
+*.result.xml
 *.vcd
 *.fst
 build/
