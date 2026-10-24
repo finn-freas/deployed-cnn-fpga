@@ -7,6 +7,9 @@ set -euo pipefail
 
 YOLOV5_COMMIT=af08ba156fd58ed5b0fe7e4e58a22c72c3cdd0ce
 TORCH_INDEX=https://download.pytorch.org/whl/cu130
+# Tolerate slow connection setup (e.g. networks where IPv6 stalls before IPv4 fallback).
+export UV_HTTP_TIMEOUT=${UV_HTTP_TIMEOUT:-300}
+export UV_CONCURRENT_DOWNLOADS=${UV_CONCURRENT_DOWNLOADS:-4}
 
 if [ ! -d build/yolov5/.git ]; then
     git clone -q https://github.com/ultralytics/yolov5 build/yolov5
