@@ -12,7 +12,14 @@
 
 module npu_core
     import npu_pkg::*;
-(
+#(
+    // Physical memory depths (default: the full ISA address spaces, for simulation).
+    // Synthesis probes override these with sizes that fit on chip.
+    parameter int ACT_MEM = ACT_DEPTH,
+    parameter int W_MEM   = W_DEPTH,
+    parameter int P_MEM   = P_DEPTH,
+    parameter int IN_MEM  = IN_DEPTH
+) (
     input  wire logic                clk,
     input  wire logic                rst,
     // control
@@ -58,29 +65,33 @@ module npu_core
 
     logic [IN_AW-1:0] in_raddr;
     logic [7:0]       in_rdata;
-    sdpram #(.W(8), .D(IN_DEPTH)) u_inbuf (
-        .clk, .we(host_ok && host_we && host_sel == SEL_IN), .waddr(IN_AW'(host_addr)),
-        .wdata(host_wdata[7:0]), .raddr(in_raddr), .rdata(in_rdata));
+    // Address ports keep the ISA widths; physical memories use the low bits.
+    localparam int IN_PA = $clog2(IN_MEM), ACT_PA = $clog2(ACT_MEM);
+    localparam int W_PA = $clog2(W_MEM), P_PA = $clog2(P_MEM);
+
+    sdpram #(.W(8), .D(IN_MEM)) u_inbuf (
+        .clk, .we(host_ok && host_we && host_sel == SEL_IN), .waddr(IN_PA'(host_addr)),
+        .wdata(host_wdata[7:0]), .raddr(IN_PA'(in_raddr)), .rdata(in_rdata));
 
     logic [ACT_AW-1:0] act_raddr, act_waddr;
     logic [WORD_W-1:0] act_rdata, act_wdata;
     logic              act_we;
-    sdpram #(.W(WORD_W), .D(ACT_DEPTH)) u_act (
-        .clk, .we(act_we), .waddr(act_waddr), .wdata(act_wdata),
-        .raddr(act_raddr), .rdata(act_rdata));
+    sdpram #(.W(WORD_W), .D(ACT_MEM)) u_act (
+        .clk, .we(act_we), .waddr(ACT_PA'(act_waddr)), .wdata(act_wdata),
+        .raddr(ACT_PA'(act_raddr)), .rdata(act_rdata));
     assign dbg_rdata = act_rdata;
 
     logic [W_AW-1:0]   w_raddr;
     logic [WORD_W-1:0] w_rdata;
-    sdpram #(.W(WORD_W), .D(W_DEPTH)) u_wmem (
-        .clk, .we(host_ok && host_we && host_sel == SEL_W), .waddr(W_AW'(host_addr)),
-        .wdata(host_wdata[WORD_W-1:0]), .raddr(w_raddr), .rdata(w_rdata));
+    sdpram #(.W(WORD_W), .D(W_MEM)) u_wmem (
+        .clk, .we(host_ok && host_we && host_sel == SEL_W), .waddr(W_PA'(host_addr)),
+        .wdata(host_wdata[WORD_W-1:0]), .raddr(W_PA'(w_raddr)), .rdata(w_rdata));
 
     logic [P_AW-1:0]    p_raddr;
     logic [PARAM_W-1:0] p_rdata;
-    sdpram #(.W(PARAM_W), .D(P_DEPTH)) u_pmem (
-        .clk, .we(host_ok && host_we && host_sel == SEL_P), .waddr(P_AW'(host_addr)),
-        .wdata(host_wdata[PARAM_W-1:0]), .raddr(p_raddr), .rdata(p_rdata));
+    sdpram #(.W(PARAM_W), .D(P_MEM)) u_pmem (
+        .clk, .we(host_ok && host_we && host_sel == SEL_P), .waddr(P_PA'(host_addr)),
+        .wdata(host_wdata[PARAM_W-1:0]), .raddr(P_PA'(p_raddr)), .rdata(p_rdata));
 
     // ---------------------------------------------------------------- execution units
     logic tile_start, tile_done, pool_start, pool_done;

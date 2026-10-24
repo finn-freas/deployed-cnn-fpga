@@ -29,6 +29,19 @@ SRCS_colorbars_top := \
 	$(ROOT)/rtl/video/test_pattern.sv \
 	colorbars_top.sv
 
+NPU_SRCS := \
+	$(ROOT)/rtl/npu/npu_pkg.sv \
+	$(ROOT)/rtl/common/sdpram.sv \
+	$(ROOT)/rtl/npu/npu_pe.sv \
+	$(ROOT)/rtl/npu/npu_array.sv \
+	$(ROOT)/rtl/npu/npu_requant.sv \
+	$(ROOT)/rtl/npu/npu_tile_engine.sv \
+	$(ROOT)/rtl/npu/npu_pool.sv \
+	$(ROOT)/rtl/npu/npu_core.sv
+
+# Synthesis-only resource probe of the NPU core (not a functional board design)
+SRCS_npu_probe_top := $(NPU_SRCS) npu_probe_top.sv
+
 SRCS := $(SRCS_$(TOP))
 
 .PHONY: all flash prog clean
