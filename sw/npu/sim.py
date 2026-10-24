@@ -1,8 +1,12 @@
-"""Instruction-level NPU simulator.
+"""Instruction-level NPU simulator with a cycle-exact model of the RTL.
 
 Executes the compiled memory images with the same addressing, padding and integer
 math as the RTL. It is the golden model for RTL tests, and is itself checked
 bit-exactly against TFLite's reference kernels.
+
+Stats.cycles reproduces the v1 RTL's per-instruction cycle counts exactly (the
+state-machine durations of npu_tile_engine / npu_pool / npu_core); tb/test_npu_core.py
+asserts the match, so micro-architecture changes can be evaluated here first.
 """
 
 from dataclasses import dataclass, field
@@ -13,10 +17,21 @@ from . import isa
 from .isa import N, Instr, Op
 from .quant import requantize
 
-# Cycle model for the v1 (fully sequential) micro-architecture; see docs/isa.md.
-FLUSH_CYCLES = 1 + (N - 1) + 2 * (N - 1) + 1   # bank read + skew + array diagonal + PE register
-DRAIN_CYCLES = N * N + 4                       # one result per cycle + requant pipeline
-TRANSPOSE_LAT = N
+# ---- cycle model of the v1 RTL (state durations in npu_tile_engine / npu_pool / npu_core)
+INSTR_OVERHEAD = 5                 # unit start/init/done handshake as seen by instr_cycles
+SEQ_PER_INSTR = 2                  # sequencer fetch/next, counted in the run total only
+GATHER_TAIL = 1
+PARAMS = N + 1
+FLUSH = 3 * (N - 1) + 3 + 1        # FLUSH_N + 1
+DRAIN = N * N
+DRAIN_TAIL = 4 + 3                 # requant latency + 3
+GROUP_FIXED = PARAMS + 1 + FLUSH + DRAIN + DRAIN_TAIL + 1   # + K (stream) per group
+NEXT_TILE = 1
+
+
+def total_cycles(stats: "Stats", n_instrs: int) -> int:
+    """Cycles from start to done for a whole program run (matches npu_core.cycles)."""
+    return sum(stats.cycles) + SEQ_PER_INSTR * n_instrs
 
 
 @dataclass
@@ -109,7 +124,7 @@ class NpuSim:
         raise RuntimeError("program did not reach END")
 
     def _nop(self, ins):
-        self.stats.cycles.append(1)
+        self.stats.cycles.append(1)   # not measured on RTL yet
         self.stats.macs.append(0)
 
     def _conv(self, ins: Instr):
@@ -138,8 +153,9 @@ class NpuSim:
         self._write_out(ins, self._requant(ins, acc, G))
 
         tiles = -(-P // N)
-        gather = K if not ins.in_src else ins.ksize * ins.ksize * N   # packed: byte reads, ~1/cycle/pixel tap
-        self.stats.cycles.append(tiles * ((gather + TRANSPOSE_LAT) + G * (1 + K + FLUSH_CYCLES + DRAIN_CYCLES)))
+        gather = N * K if ins.in_src else N * (K // N)     # packed: one byte/cycle; else one word/cycle
+        per_tile = gather + GATHER_TAIL + G * (GROUP_FIXED + K) + NEXT_TILE
+        self.stats.cycles.append(tiles * per_tile + INSTR_OVERHEAD)
         self.stats.macs.append(P * real_k * G * N)
 
     def _dwconv(self, ins: Instr):
@@ -152,9 +168,11 @@ class NpuSim:
         Wm = self.wmem[w_addr].astype(np.int64).reshape(cb, T, N)
         acc = np.einsum("ptgc,gtc->pgc", A, Wm)                                       # [P, cb, N]
         self._write_out(ins, self._requant(ins, acc, cb))
-        # Baseline mapping: one 8-pixel x 8-channel tile per (tile, cb), only T taps deep.
+        # v1 RTL: CONV datapath with block-diagonal weights, so K = T*N and the A rows are
+        # re-gathered for every channel block.
         tiles = -(-P // N)
-        self.stats.cycles.append(tiles * cb * (T + TRANSPOSE_LAT + 1 + T + FLUSH_CYCLES + DRAIN_CYCLES))
+        per_tile = cb * (N * T + GATHER_TAIL + GROUP_FIXED + T * N) + NEXT_TILE
+        self.stats.cycles.append(tiles * per_tile + INSTR_OVERHEAD)
         self.stats.macs.append(P * T * cb * N)
 
     def _maxpool(self, ins: Instr):
@@ -162,8 +180,13 @@ class NpuSim:
         m = np.where(v[..., None], words, np.int8(-128)).max(axis=(1, 2))
         m = np.clip(m, ins.act_min, ins.act_max).astype(np.int8)
         self._write_out(ins, m)
-        self.stats.cycles.append(m.shape[0] * ins.in_cb * (ins.ksize ** 2 + 1))
+        self.stats.cycles.append(self._pool_cycles(ins, m.shape[0], divide=False))
         self.stats.macs.append(0)
+
+    @staticmethod
+    def _pool_cycles(ins: Instr, P: int, divide: bool) -> int:
+        # taps + tail + (divider: init + 16 steps | 1) + write + next, per pixel per block
+        return P * ins.in_cb * (ins.ksize ** 2 + 1 + (17 if divide else 1) + 1 + 1) + INSTR_OVERHEAD
 
     def _avgpool(self, ins: Instr):
         # TFLite reference int8 AveragePool: sum over in-bounds taps, divide by their count
@@ -175,7 +198,7 @@ class NpuSim:
         q = np.where(s > 0, (s + half) // cnt, -((-(s - half)) // cnt))
         q = np.clip(q, ins.act_min, ins.act_max).astype(np.int8)
         self._write_out(ins, q)
-        self.stats.cycles.append(q.shape[0] * ins.in_cb * (ins.ksize ** 2 + 2))
+        self.stats.cycles.append(self._pool_cycles(ins, q.shape[0], divide=True))
         self.stats.macs.append(0)
 
     def _argmax(self, ins: Instr):
@@ -184,5 +207,5 @@ class NpuSim:
         v = self.act[ins.in_base + idx // N, idx % N].astype(np.int64)
         cls = int(np.argmax(v))          # first maximum, like TFLite ARG_MAX
         self.result = (cls, int(v[cls]))
-        self.stats.cycles.append(count + 2)
+        self.stats.cycles.append(count + 3)
         self.stats.macs.append(0)

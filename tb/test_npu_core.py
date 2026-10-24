@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "sw"))
 from npu import isa  # noqa: E402
 from npu.compiler import compile_ir, load_ir  # noqa: E402
+from npu.sim import NpuSim, total_cycles  # noqa: E402
 
 MODELS = {"mnist": ROOT / "build" / "model", "vww": ROOT / "build" / "vww"}
 SEL_IMEM, SEL_IN, SEL_ACT, SEL_W, SEL_P = range(5)
@@ -127,9 +128,15 @@ async def run_model(dut, name):
         assert int(dut.result_class.value) == exp_cls, f"image {i}: class"
         dut._log.info(f"{name} image {i}: all {len(layer_at)} layers bit-exact, class {exp_cls}")
 
+    # The simulator's cycle model must reproduce the RTL exactly.
+    model = NpuSim.from_program(prog)
+    model.run(gold["images"][0])
     total = sum(c for _, c in per_instr_cycles)
-    for pc, c in per_instr_cycles:
-        dut._log.info(f"  {pc:2d} {prog.instrs[pc].op.name:8s} {prog.instrs[pc].comment:26s} {c:9d} cycles")
+    for (pc, c), m in zip(per_instr_cycles, model.stats.cycles):
+        dut._log.info(f"  {pc:2d} {prog.instrs[pc].op.name:8s} {prog.instrs[pc].comment:26s} "
+                      f"{c:9d} cycles (model {m})")
+    assert [c for _, c in per_instr_cycles] == model.stats.cycles, "cycle model != RTL"
+    expected_total = total_cycles(model.stats, len(prog.instrs))
 
     # ---- full speed: final result + cycles
     dut.step_mode.value = 0
@@ -146,6 +153,7 @@ async def run_model(dut, name):
         assert cls == int(np.argmax(logits)) and score == int(logits.max()), f"image {i}: result"
         correct += cls == int(gold["labels"][i])
         cycles = int(dut.cycles.value)
+        assert cycles == expected_total, f"image {i}: {cycles} cycles, model says {expected_total}"
     dut._log.info(f"{name}: {n} images at full speed match TFLite; accuracy {correct}/{n}; "
                   f"{cycles} cycles/inference = {cycles / 25.2:.0f} us @ 25.2 MHz "
                   f"(per-instruction sum in step mode: {total})")
