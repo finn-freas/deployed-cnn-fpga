@@ -23,9 +23,9 @@ SEQ_PER_INSTR = 2 + isa.INSTR_W // 32   # fetch beats + next, counted in the run
 TILE_SETUP = N                     # per-row pixel coordinates
 GATHER_TAIL_WORD = 2 + N           # last word lands, transposer writes its N columns
 
-DRAIN_DELAY = 3                    # npu_tile_engine: capture -> first shadow read
-PERIOD_MIN = DRAIN_DELAY + N * N + 1   # min cycles between injections
-DRAIN_DONE = DRAIN_DELAY + N * N + 4 + 2   # capture -> drain + requant pipeline empty
+DRAIN_DELAY = N // 2 + 1           # npu_tile_engine: capture -> first shadow read (2 requants)
+PERIOD_MIN = DRAIN_DELAY + N * N // 2 + 1  # min cycles between injections
+DRAIN_DONE = DRAIN_DELAY + N * N // 2 + 4 + 2   # capture -> drain + requant pipeline empty
 
 # External store (rtl/sim/ext_mem_model.sv defaults, as instantiated by npu_sim_top)
 EXT_LATENCY = 6

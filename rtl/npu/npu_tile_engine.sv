@@ -54,14 +54,16 @@ module npu_tile_engine
     localparam int KA_AW       = $clog2(K_MAX);      // address within one A_T half
     localparam int RQ_LAT      = 4;                  // npu_requant latency
     // Timing (injection issued in cycle i reaches PE(r,c) in cycle i+1+r+c):
-    //   the drain's first read is in cycle i+DRAIN_DELAY+1 and it reads PE(r,c) N*r+c cycles
-    //   later, which is after that PE captured as long as DRAIN_DELAY >= 1;
-    //   a later injection in cycle i2 overwrites PE(r,c)'s shadow in cycle i2+1+r+c, so it
-    //   must wait until i2 > i+DRAIN_DELAY+(N-1)*r for every r; and since that injection
-    //   also hands the next job to the drain, this drain's N*N reads (cycles i+DRAIN_DELAY+1
-    //   .. i+DRAIN_DELAY+N*N) must be finished: i2 >= i + DRAIN_DELAY + N*N + 1.
-    localparam int DRAIN_DELAY = 3;
-    localparam int PERIOD_MIN  = DRAIN_DELAY + N * N + 1;
+    //   the drain has two requant pipelines and reads a column pair per cycle, starting in
+    //   cycle i+DRAIN_DELAY+1: PE(r,c) is read (N/2)*r + c/2 cycles later. That must be after
+    //   its capture in cycle i+1+r+c, i.e. DRAIN_DELAY > ceil(c/2) - (N/2-1)*r for all r,c:
+    //   DRAIN_DELAY >= N/2 + 1 (the worst case is row 0, column N-1);
+    //   a later injection in cycle i2 overwrites PE(r,c)'s shadow in cycle i2+1+r+c, which
+    //   must follow that read; and since that injection also hands the next job to the
+    //   drain, this drain's N*N/2 issues must be finished: i2 >= i + DRAIN_DELAY + N*N/2 + 1
+    //   (this bound also covers the overwrite condition).
+    localparam int DRAIN_DELAY = N / 2 + 1;
+    localparam int PERIOD_MIN  = DRAIN_DELAY + N * N / 2 + 1;
     localparam int DQ          = RQ_LAT + 1;         // drain issue -> requant output
 
     // ---------------------------------------------------------------- main FSM
@@ -264,27 +266,39 @@ module npu_tile_engine
     logic [13:0] pend_p0;
     logic [5:0]  pend_g;
     logic        dr_busy, dr_run;
-    logic [1:0]  dr_wait;
-    logic [6:0]  dr_idx;
+    logic [2:0]  dr_wait;
+    logic [5:0]  dr_idx;            // column-pair index: row dr_idx[4:2], pair dr_idx[1:0]
     logic [13:0] dr_p0;
     logic [5:0]  dr_g;
-    logic signed [ACC_W-1:0] dr_sh;                 // selected shadow, registered
+    // per-channel params: prefetched for the pending job while it streams (nx_*), moved to
+    // the drain's set (dp_*) at handover, so the drain never waits on the param buffer
+    logic signed [31:0]        nx_bias [N], nx_mult [N], dp_bias [N], dp_mult [N];
+    logic signed [SHIFT_W-1:0] nx_shift [N], dp_shift [N];
+    logic [3:0]  pf_j;              // prefetch index (N = done)
+    logic        pf_v;
+    logic [2:0]  pf_jd;
+    // two requant pipelines: even and odd column of each pair
+    logic signed [ACC_W-1:0]   rq_acc   [2];
+    logic signed [31:0]        rq_bias  [2], rq_mult [2];
+    logic signed [SHIFT_W-1:0] rq_shift [2];
+    logic signed [7:0]         rq_out   [2];
     logic [DQ-1:0]           tq_v;
-    logic [2:0]              tq_c   [DQ];
-    logic                    tq_wr  [DQ];           // last byte of a valid pixel
+    logic [1:0]              tq_cp  [DQ];
+    logic                    tq_wr  [DQ];           // last pair of a valid pixel
     logic [ACT_AW-1:0]       tq_adr [DQ];
-    logic signed [7:0]       rq_out;
-    logic [WORD_W-9:0]       row_word;              // bytes 0..N-2 of the pixel being drained
+    logic [WORD_W-17:0]      row_word;              // bytes 0..N-3 of the pixel being drained
 
-    npu_requant u_rq (
-        .clk, .acc(dr_sh), .bias(32'(pb_rdata)), .mult(32'(pb_rdata >> 32)),
-        .shift(SHIFT_W'(pb_rdata >> 64)), .rmode(I.rmode),
-        .out_zp(I.out_zp), .act_min(I.act_min), .act_max(I.act_max), .out(rq_out));
+    for (genvar q = 0; q < 2; q++) begin : g_rq
+        npu_requant u_rq (
+            .clk, .acc(rq_acc[q]), .bias(rq_bias[q]), .mult(rq_mult[q]), .shift(rq_shift[q]),
+            .rmode(I.rmode), .out_zp(I.out_zp), .act_min(I.act_min), .act_max(I.act_max),
+            .out(rq_out[q]));
+    end
 
     always_comb begin
         act_we    = tq_v[DQ-1] && tq_wr[DQ-1];
         act_waddr = tq_adr[DQ-1];
-        act_wdata = {rq_out, row_word};
+        act_wdata = {rq_out[1], rq_out[0], row_word};
     end
 
     // ---------------------------------------------------------------- buffer addressing
@@ -293,7 +307,7 @@ module npu_tile_engine
         else if (is_dw) wb_raddr = WBUF_AW'(24'(c_g) * 24'(taps) + 24'(sk >> 3));
         else            wb_raddr = WBUF_AW'(24'(c_g) * 24'(K) + 24'(sk));
         at_raddr = {sbuf, KA_AW'(sk)};
-        pb_raddr = PBUF_AW'(16'(dr_g) * 16'(N) + 16'(dr_idx[2:0]));               // drain
+        pb_raddr = PBUF_AW'(16'(pend_g) * 16'(N) + 16'(pf_j[2:0]));               // param prefetch
         // external loads land in the buffers
         wb_we    = ext_rvalid && w_loading;
         wb_waddr = (!cached && wdbl) ? {lg[0], (WBUF_AW-1)'(ld_cnt)} : WBUF_AW'(ld_cnt);
@@ -337,25 +351,42 @@ module npu_tile_engine
             if (!ld_cnt[0]) p_word0 <= ext_rdata;
         end
 
+        // ---- param prefetch for the pending job (N reads, one cycle latency)
+        pf_v <= 1'b0;
+        if (pf_j != 4'(N)) begin
+            pf_v  <= 1'b1;
+            pf_jd <= pf_j[2:0];
+            pf_j  <= pf_j + 4'd1;
+        end
+        if (pf_v) begin
+            nx_bias[pf_jd]  <= 32'(pb_rdata);
+            nx_mult[pf_jd]  <= 32'(pb_rdata >> 32);
+            nx_shift[pf_jd] <= SHIFT_W'(pb_rdata >> 64);
+        end
+
         // ---- injection bookkeeping: hand the pending job to the drain
         if (inj_now) begin
             since_inj <= '0;
             if (pend_valid) begin
-                dr_busy <= 1'b1;
-                dr_wait <= 2'(DRAIN_DELAY - 1);
-                dr_run  <= 1'b0;
-                dr_p0   <= pend_p0;
-                dr_g    <= pend_g;
+                dr_busy  <= 1'b1;
+                dr_wait  <= 3'(DRAIN_DELAY - 1);
+                dr_run   <= 1'b0;
+                dr_p0    <= pend_p0;
+                dr_g     <= pend_g;
+                dp_bias  <= nx_bias;
+                dp_mult  <= nx_mult;
+                dp_shift <= nx_shift;
             end
             pend_valid <= (cstate == C_STREAM);
             pend_p0    <= c_p0;
             pend_g     <= c_g;
+            if (cstate == C_STREAM) pf_j <= '0;    // start fetching this job's params
         end
 
-        // ---- drain: wait DRAIN_DELAY, then issue N*N shadow reads (row-major)
+        // ---- drain: wait DRAIN_DELAY, then issue N*N/2 column-pair reads (row-major)
         tq_v <= {tq_v[DQ-2:0], 1'b0};
         for (int i = DQ - 1; i > 0; i--) begin
-            tq_c[i]   <= tq_c[i-1];
+            tq_cp[i]  <= tq_cp[i-1];
             tq_wr[i]  <= tq_wr[i-1];
             tq_adr[i] <= tq_adr[i-1];
         end
@@ -365,24 +396,33 @@ module npu_tile_engine
                     dr_run <= 1'b1;
                     dr_idx <= '0;
                 end else begin
-                    dr_wait <= dr_wait - 2'd1;
+                    dr_wait <= dr_wait - 3'd1;
                 end
             end else begin
                 logic [13:0] p;
-                p = dr_p0 + 14'(dr_idx[5:3]);
-                dr_sh     <= arr_shadow[dr_idx[5:3]][dr_idx[2:0]];
+                logic [2:0]  r, c0;
+                r  = dr_idx[4:2];
+                c0 = {dr_idx[1:0], 1'b0};
+                p  = dr_p0 + 14'(r);
+                for (int q = 0; q < 2; q++) begin
+                    rq_acc[q]   <= arr_shadow[r][c0 + 3'(q)];
+                    rq_bias[q]  <= dp_bias[c0 + 3'(q)];
+                    rq_mult[q]  <= dp_mult[c0 + 3'(q)];
+                    rq_shift[q] <= dp_shift[c0 + 3'(q)];
+                end
                 tq_v[0]   <= 1'b1;
-                tq_c[0]   <= dr_idx[2:0];
-                tq_wr[0]  <= (dr_idx[2:0] == 3'(N - 1)) && (p < P);
+                tq_cp[0]  <= dr_idx[1:0];
+                tq_wr[0]  <= (dr_idx[1:0] == 2'(N / 2 - 1)) && (p < P);
                 tq_adr[0] <= ACT_AW'(24'(I.out_base) + 24'(p) * 24'(I.out_g) + 24'(dr_g));
-                dr_idx    <= dr_idx + 7'd1;
-                if (dr_idx == 7'(N * N - 1)) begin
+                dr_idx    <= dr_idx + 6'd1;
+                if (dr_idx == 6'(N * N / 2 - 1)) begin
                     dr_busy <= 1'b0;
                     dr_run  <= 1'b0;
                 end
             end
         end
-        if (tq_v[DQ-1] && tq_c[DQ-1] != 3'(N - 1)) row_word[8 * tq_c[DQ-1] +: 8] <= rq_out;
+        if (tq_v[DQ-1] && tq_cp[DQ-1] != 2'(N / 2 - 1))
+            row_word[16 * tq_cp[DQ-1] +: 16] <= {rq_out[1], rq_out[0]};
 
         if (rst) begin
             state      <= S_IDLE;
@@ -396,6 +436,7 @@ module npu_tile_engine
             pend_valid <= 1'b0;
             tq_v       <= '0;
             since_inj  <= 8'hFF;
+            pf_j       <= 4'(N);
             full       <= '0;
         end else begin
             // ======================================================== main
