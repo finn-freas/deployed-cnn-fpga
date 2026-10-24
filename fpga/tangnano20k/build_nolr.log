@@ -1,0 +1,4 @@
+source /home/finnf/oss-cad-suite/environment && yosys -m slang -q -l build/npu_probe_top_nolr/yosys.log -p "\
+	read_verilog -sv ../../rtl/gowin/gw_clk_gen.sv ../../rtl/gowin/gw_dvi_phy.sv; \
+	read_slang --top npu_probe_top ../../rtl/npu/npu_pkg.sv ../../rtl/common/sdpram.sv ../../rtl/npu/npu_pe.sv ../../rtl/npu/npu_array.sv ../../rtl/npu/npu_requant.sv ../../rtl/npu/npu_tile_engine.sv ../../rtl/npu/npu_pool.sv ../../rtl/npu/npu_core.sv npu_probe_top.sv; \
+	synth_gowin -top npu_probe_top -family gw2a -nolutram -json build/npu_probe_top_nolr/npu_probe_top-synth.json"

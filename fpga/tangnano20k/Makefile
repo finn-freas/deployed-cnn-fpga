@@ -45,6 +45,8 @@ NPU_SRCS := \
 # Synthesis-only resource probe of the NPU core (not a functional board design)
 SRCS_npu_probe_top := $(NPU_SRCS) npu_probe_top.sv
 SRCS_dsp_probe_top := dsp_probe_top.sv
+SRCS_dsp_mix_probe_top := dsp_mix_probe_top.sv
+SRCS_dp_probe_top := $(ROOT)/rtl/npu/npu_pkg.sv $(ROOT)/rtl/npu/npu_pe.sv $(ROOT)/rtl/npu/npu_array.sv $(ROOT)/rtl/npu/npu_requant.sv dp_probe_top.sv
 SRCS_npu_probe_small_top := $(NPU_SRCS) npu_probe_small_top.sv
 
 SRCS := $(SRCS_$(TOP))

@@ -5,3 +5,4 @@ source /home/finnf/oss-cad-suite/environment && yosys -m slang -q -l build/npu_p
 source /home/finnf/oss-cad-suite/environment && nextpnr-himbaechel --json build/npu_probe_small_top/npu_probe_small_top-synth.json --write build/npu_probe_small_top/npu_probe_small_top-pnr.json --device GW2AR-LV18QN88C8/I7 \
 	--vopt family=GW2A-18C --vopt cst=tangnano20k.cst --report build/npu_probe_small_top/report.json \
 	--freq 25.2 --threads 8 -l build/npu_probe_small_top/nextpnr.log --quiet
+make: *** [Makefile:64: build/npu_probe_small_top/npu_probe_small_top-pnr.json] Terminated
