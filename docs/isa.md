@@ -77,7 +77,7 @@ convolutions fill padding with `in_zp` rather than 0.
 | rmode | 1 | | requant rounding: 0 = double, 1 = single |
 | in_src | 1 | | CONV input: 0 = activation memory, 1 = packed input buffer |
 | uniform | 1 | | DWCONV: every channel uses param entry 0 and channel block 0's `ksize²` weight words (a lowered AVGPOOL) |
-| (reserved) | 14 | | zero |
+| (reserved) | 9 | | zero |
 
 ## Instructions
 
