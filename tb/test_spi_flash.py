@@ -23,11 +23,10 @@ async def bursts_match_flash_contents(dut):
 
     words = [rng.getrandbits(64) for _ in range(256)]
     for w, word in enumerate(words):
-        for b in range(8):
-            dut.load_we.value = 1
-            dut.load_addr.value = BASE + w * 8 + b
-            dut.load_data.value = (word >> (8 * b)) & 0xFF
-            await FallingEdge(dut.clk)
+        dut.load_we.value = 1
+        dut.load_addr.value = BASE + w * 8
+        dut.load_data.value = word
+        await FallingEdge(dut.clk)
     dut.load_we.value = 0
 
     for start, length in [(0, 1), (5, 3), (17, 40), (200, 56), (255, 1)]:

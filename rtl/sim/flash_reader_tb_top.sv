@@ -15,7 +15,7 @@ module flash_reader_tb_top #(
     output      logic [63:0] rdata,
     input  wire logic        load_we,
     input  wire logic [22:0] load_addr,
-    input  wire logic [7:0]  load_data
+    input  wire logic [63:0] load_data
 );
 
     logic cs_n, sclk, mosi, miso;

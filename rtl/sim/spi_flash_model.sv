@@ -1,6 +1,6 @@
 // spi_flash_model: behavioural 8 MiB SPI NOR flash, READ (0x03) only, SPI mode 0
-// (simulation). Contents are loaded through a byte write port. Samples MOSI on SCLK
-// rising edges and changes MISO after falling edges, like a real part.
+// (simulation). Contents are loaded 8 bytes at a time (little-endian) through a write
+// port. Samples MOSI on SCLK rising edges and changes MISO after falling edges.
 
 `default_nettype none
 /* verilator lint_off SYNCASYNCNET */   // CS# is both an async reset and a sampled level here
@@ -13,8 +13,8 @@ module spi_flash_model (
     // contents loading (independent clock)
     input  wire logic        load_clk,
     input  wire logic        load_we,
-    input  wire logic [22:0] load_addr,
-    input  wire logic [7:0]  load_data
+    input  wire logic [22:0] load_addr,     // byte address, 8-aligned
+    input  wire logic [63:0] load_data
 );
 
     logic [7:0]  mem [1 << 23];
@@ -24,7 +24,8 @@ module spi_flash_model (
     logic [22:0] ptr;
     logic [2:0]  out_bit;
 
-    always_ff @(posedge load_clk) if (load_we) mem[load_addr] <= load_data;
+    always_ff @(posedge load_clk)
+        if (load_we) for (int b = 0; b < 8; b++) mem[load_addr + 23'(b)] <= load_data[8 * b +: 8];
 
     always_ff @(posedge sclk or posedge cs_n) begin
         if (cs_n) begin

@@ -26,7 +26,9 @@ MODELS = {"mnist": ROOT / "build" / "model", "vww": ROOT / "build" / "vww"}
 SEL_IMEM, SEL_ACT, SEL_EXT = 0, 2, 3
 LAYER_IMAGES = int(os.environ.get("NPU_CORE_IMAGES", "3"))
 FAST_IMAGES = int(os.environ.get("NPU_CORE_FAST", "10"))
-CHECK_CYCLES = os.environ.get("NPU_CHECK_CYCLES", "1") == "1"   # RTL cycles == simulator model
+EXT_FLASH = os.environ.get("NPU_EXT_FLASH", "0") == "1"         # weights over SPI flash
+# RTL cycles == simulator model (the model covers the ext_mem_model back-end only)
+CHECK_CYCLES = os.environ.get("NPU_CHECK_CYCLES", "0" if EXT_FLASH else "1") == "1"
 
 
 # ---------------------------------------------------------------- host access helpers
@@ -176,9 +178,18 @@ async def core_vww(dut):
 
 SOURCES = ["npu/npu_pkg.sv", "common/sdpram.sv", "npu/npu_pe.sv", "npu/npu_array.sv",
            "npu/npu_requant.sv", "npu/npu_tile_engine.sv", "npu/npu_pool.sv", "npu/npu_core.sv",
-           "sim/ext_mem_model.sv", "sim/npu_sim_top.sv"]
+           "common/spi_flash_reader.sv", "sim/spi_flash_model.sv", "sim/ext_mem_model.sv",
+           "sim/npu_sim_top.sv"]
 
 
 def test_npu_core():
     from sim import run
     run("npu_sim_top", SOURCES, "test_npu_core")
+
+
+def test_npu_core_spi_flash():
+    """Same checks with weights/params streamed from SPI flash (the board's weight path)."""
+    from sim import run
+    run("npu_sim_top", SOURCES, "test_npu_core", parameters={"EXT_FLASH": 1},
+        extra_env={"NPU_EXT_FLASH": "1", "NPU_CORE_IMAGES": os.environ.get("NPU_CORE_IMAGES", "1"),
+                   "NPU_CORE_FAST": os.environ.get("NPU_CORE_FAST", "1")})

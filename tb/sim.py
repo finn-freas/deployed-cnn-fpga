@@ -10,7 +10,7 @@ RTL = ROOT / "rtl"
 
 
 def run(top: str, sources: list[str], test_module: str, parameters: dict | None = None,
-        waves: bool = False, testcase: str | None = None):
+        waves: bool = False, testcase: str | None = None, extra_env: dict | None = None):
     """sources are paths relative to rtl/."""
     build_dir = ROOT / "build" / "sim" / (top + "".join(f"_{k}{v}" for k, v in (parameters or {}).items()))
     runner = get_runner("verilator")
@@ -30,4 +30,5 @@ def run(top: str, sources: list[str], test_module: str, parameters: dict | None 
         build_dir=build_dir,
         waves=waves,
         testcase=testcase,
+        extra_env=extra_env or {},
     )
