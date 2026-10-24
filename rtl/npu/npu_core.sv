@@ -33,7 +33,7 @@ module npu_core
     /* verilator lint_off UNUSEDSIGNAL */
     input  wire logic [15:0]         host_addr,     // 16 bits for the external store; core uses fewer
     /* verilator lint_on UNUSEDSIGNAL */
-    input  wire logic [INSTR_W-1:0]  host_wdata,
+    input  wire logic [WORD_W-1:0]   host_wdata,    // 64-bit: act/ext words, 32-bit instruction beats
     // debug read port (activation memory, 1-cycle latency)
     input  wire logic [ACT_AW-1:0]   dbg_addr,
     output      logic [WORD_W-1:0]   dbg_rdata,
@@ -60,10 +60,19 @@ module npu_core
     assign paused  = (qs == Q_PAUSE);
 
     // ---------------------------------------------------------------- memories
-    logic [INSTR_W-1:0] imem_rdata;
-    sdpram #(.W(INSTR_W), .D(IMEM_DEPTH)) u_imem (
-        .clk, .we(host_ok && host_we && host_sel == SEL_IMEM), .waddr(IMEM_AW'(host_addr)),
-        .wdata(host_wdata), .raddr(pc), .rdata(imem_rdata));
+    // Instruction memory stores each INSTR_W-bit instruction as IMEM_BEATS 32-bit words
+    // (word pc*IMEM_BEATS + b holds bits 32b+31:32b), so it fits one block RAM instead of
+    // INSTR_W/36 side by side; fetch reads the beats one per cycle.
+    localparam int IMEM_BEATS = INSTR_W / 32;
+    localparam int IB_AW      = $clog2(IMEM_DEPTH * IMEM_BEATS);
+    logic [31:0]        imem_rdata32;
+    logic [IB_AW-1:0]   imem_raddr;
+    logic [INSTR_W-1:0] imem_rdata;      // assembled instruction
+    logic [3:0]         fb;              // fetch beat
+    sdpram #(.W(32), .D(IMEM_DEPTH * IMEM_BEATS)) u_imem (
+        .clk, .we(host_ok && host_we && host_sel == SEL_IMEM), .waddr(IB_AW'(host_addr)),
+        .wdata(host_wdata[31:0]), .raddr(imem_raddr), .rdata(imem_rdata32));
+    assign imem_raddr = IB_AW'(pc * IB_AW'(IMEM_BEATS) + IB_AW'(fb));
 
     logic [ACT_AW-1:0] act_raddr, act_waddr;
     logic [WORD_W-1:0] act_rdata, act_wdata;
@@ -166,12 +175,20 @@ module npu_core
                 Q_IDLE: if (start) begin
                     pc     <= '0;
                     cycles <= '0;
+                    fb     <= '0;
                     qs     <= Q_FETCH;
                 end
 
+                // beat b is addressed in cycle b and lands in cycle b+1
                 Q_FETCH: begin
-                    instr_start <= cycles;
-                    qs <= Q_DECODE;           // imem_rdata valid next cycle
+                    if (fb != 0) imem_rdata[32 * 3'(fb - 4'd1) +: 32] <= imem_rdata32;
+                    if (fb == 4'(IMEM_BEATS)) begin
+                        instr_start <= cycles;   // instr_cycles excludes the fetch beats
+                        fb <= '0;
+                        qs <= Q_DECODE;
+                    end else begin
+                        fb <= fb + 4'd1;
+                    end
                 end
 
                 Q_DECODE: begin

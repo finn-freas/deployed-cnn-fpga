@@ -57,7 +57,10 @@ async def host_write_block(dut, sel, values, base=0):
 
 
 async def load_model(dut, prog):
-    await host_write_block(dut, SEL_IMEM, [ins.encode() for ins in prog.instrs])
+    # instruction memory: each instruction as INSTR_W/32 words, low word first
+    beats = isa.INSTR_W // 32
+    words = [(ins.encode() >> (32 * b)) & 0xFFFFFFFF for ins in prog.instrs for b in range(beats)]
+    await host_write_block(dut, SEL_IMEM, words)
     await host_write_block(dut, SEL_EXT, prog.ext_words())
 
 

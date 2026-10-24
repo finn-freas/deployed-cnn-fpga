@@ -19,7 +19,7 @@ from .quant import requantize
 
 # ---- cycle model of the RTL (state durations in npu_tile_engine / npu_pool / npu_core)
 INSTR_OVERHEAD = 5                 # unit start/init/done handshake as seen by instr_cycles
-SEQ_PER_INSTR = 2                  # sequencer fetch/next, counted in the run total only
+SEQ_PER_INSTR = 2 + isa.INSTR_W // 32   # fetch beats + next, counted in the run total only
 TILE_SETUP = N                     # per-row pixel coordinates
 GATHER_TAIL_WORD = 2 + N           # last word lands, transposer writes its N columns
 GATHER_TAIL_PACKED = 2             # last byte lands

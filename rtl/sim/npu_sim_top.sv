@@ -30,7 +30,7 @@ module npu_sim_top
     input  wire logic                host_we,
     input  wire logic [2:0]          host_sel,
     input  wire logic [15:0]         host_addr,
-    input  wire logic [INSTR_W-1:0]  host_wdata,
+    input  wire logic [WORD_W-1:0]   host_wdata,    // 64-bit: act/ext words, 32-bit instruction beats
     input  wire logic [ACT_AW-1:0]   dbg_addr,
     output      logic [WORD_W-1:0]   dbg_rdata
 );

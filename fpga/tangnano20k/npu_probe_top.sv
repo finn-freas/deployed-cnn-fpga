@@ -31,7 +31,7 @@ module npu_probe_top (
         .busy, .paused, .done, .pc, .result_class(cls), .result_score(score),
         .cycles, .instr_cycles,
         .host_we(lfsr[5]), .host_sel(lfsr[8:6]), .host_addr(lfsr[24:9]),
-        .host_wdata({lfsr, lfsr, lfsr[31:0]}),
+        .host_wdata(lfsr),
         .dbg_addr(lfsr[ACT_AW-1:0]), .dbg_rdata,
         .ext_req, .ext_addr, .ext_len, .ext_ack(ext_req & lfsr[40]),
         .ext_rvalid(lfsr[41]), .ext_rdata(lfsr));
