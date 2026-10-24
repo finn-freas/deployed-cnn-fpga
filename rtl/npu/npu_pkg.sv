@@ -42,7 +42,8 @@ package npu_pkg;
 
     // Fields listed MSB first (isa.py lists them LSB first).
     typedef struct packed {
-        logic [9:0] rsvd;
+        logic [8:0] rsvd;
+        logic uniform;
         logic in_src;
         logic rmode;
         logic signed [7:0] act_max;

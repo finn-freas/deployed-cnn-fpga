@@ -447,7 +447,7 @@ module npu_tile_engine
         else if (!cached) wb_raddr = wdbl ? {c_g[0], (WBUF_AW-1)'(sk)} : WBUF_AW'(sk);   // group mode
         else              wb_raddr = c_wb + WBUF_AW'(sk);
         at_raddr = {sbuf, KA_AW'(sk)};
-        pb_raddr = PBUF_AW'({pf_g, pf_j[2:0]});                                            // param prefetch
+        pb_raddr = PBUF_AW'({pf_g, I.uniform ? 3'd0 : pf_j[2:0]});                         // param prefetch
         // external loads land in the buffers
         wb_we    = ext_rvalid && w_loading;
         wb_waddr = (!cached && wdbl) ? {lg[0], (WBUF_AW-1)'(ld_cnt)} : WBUF_AW'(ld_cnt);
@@ -641,7 +641,7 @@ module npu_tile_engine
                     seg_m1  <= (I.stride == 2'd2) ? 5'(7 * 2 + 2) : 5'(7 + 2);
                     // multiplies: layer_words, P, RS, OWG
                     layer_words <= '0; P <= '0; RS <= '0; OWG <= '0;
-                    m_a1 <= 17'((I.op == OP_DWCONV) ? 11'(t) : k);  m_b1 <= 7'(I.out_g);
+                    m_a1 <= 17'((I.op == OP_DWCONV) ? 11'(t) : k);  m_b1 <= I.uniform ? 7'd1 : 7'(I.out_g);
                     m_a2 <= 14'(I.out_w);                          m_b2 <= I.out_h;
                     m_a3 <= 13'(I.in_w);                           m_b3 <= 7'(I.in_cb);
                     m_a4 <= 13'(I.out_w);                          m_b4 <= 7'(I.out_g);
@@ -653,8 +653,8 @@ module npu_tile_engine
                 S_PLOAD_REQ: begin
                     ext_req  <= 1'b1;
                     ext_addr <= EXT_AW'(I.p_base);
-                    ext_len  <= 16'({I.out_g, 4'b0000});                // out_g * N * PARAM_WORDS
-                    ld_len   <= 17'({I.out_g, 4'b0000});
+                    ext_len  <= I.uniform ? 16'(PARAM_WORDS) : 16'({I.out_g, 4'b0000});   // entries * PARAM_WORDS
+                    ld_len   <= I.uniform ? 17'(PARAM_WORDS) : 17'({I.out_g, 4'b0000});
                     ld_cnt   <= '0;
                     if (ext_req && ext_ack) begin
                         ext_req <= 1'b0;
@@ -935,7 +935,7 @@ module npu_tile_engine
                     if (rd_go && ustart) begin
                         // a unit's first read: fetch its params
                         pf_j  <= '0;
-                        pf_g  <= dw_cb;
+                        pf_g  <= I.uniform ? 6'd0 : dw_cb;
                         wset  <= !wset;
                         u_set <= !wset;
                     end
@@ -974,7 +974,7 @@ module npu_tile_engine
                                         cb_ob   <= cb_ob + 13'd1;
                                         y_ob    <= cb_ob + 13'd1;
                                         u_ob    <= cb_ob + 13'd1;
-                                        cb_wb   <= cb_wb + 10'(taps);
+                                        cb_wb   <= I.uniform ? cb_wb : cb_wb + 10'(taps);
                                         if (dw_cb == I.out_g - 6'd1) dw_more <= 1'b0;
                                     end
                                 end

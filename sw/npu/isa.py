@@ -62,6 +62,8 @@ FIELDS = [
     ("rmode",    1, False),   # requant rounding: 0 = double, 1 = single; see quant.py
     ("in_src",   1, False),   # CONV input: 0 = channel-blocked, 1 = packed uint8 HWC bytes
                               # starting at byte in_base*8 of activation memory
+    ("uniform",  1, False),   # DWCONV: every channel uses param entry 0 and channel block 0's
+                              # weights (one entry, ksize^2 words), e.g. a lowered AVGPOOL
 ]
 assert sum(w for _, w, _ in FIELDS) <= INSTR_W
 assert K_MAX * 128 * 128 < 1 << (ACC_W - 1), "accumulators must hold K_MAX int8 products"
@@ -89,6 +91,7 @@ class Instr:
     act_max: int = 127
     rmode: int = 0
     in_src: int = 0
+    uniform: int = 0
     comment: str = field(default="", compare=False)
 
     @property

@@ -276,14 +276,20 @@ class NpuSim:
         words, _ = self._gather_words(ins, ins.in_zp)                                 # [P, k, k, cb, N]
         P = words.shape[0]
         A = words.reshape(P, T, cb, N).astype(np.int64)
-        Wm = self._weights(ins, cb * T).reshape(cb, T, N)
+        nb = 1 if ins.uniform else cb          # channel blocks of weights / params stored
+        Wm = np.broadcast_to(self._weights(ins, nb * T).reshape(nb, T, N), (cb, T, N))
         acc = np.einsum("ptgc,gtc->pgc", A, Wm)                                       # [P, cb, N]
-        self._write_out(ins, self._requant(ins, acc, cb))
-        # depthwise line datapath; the weights always fit the weight buffer (cached)
+        if ins.uniform:
+            bias, mult, shift = (np.full((cb, N), p[0]) for p in self._params(ins, 1))
+            y = requantize(acc, bias, mult, shift, ins.out_zp, ins.act_min, ins.act_max, ins.rmode)
+        else:
+            y = self._requant(ins, acc, cb)
+        self._write_out(ins, y)
+        # depthwise datapath; the weights always fit the weight buffer (cached)
         assert ins.ksize in DW_K and ins.stride in (1, 2) and cb * T <= isa.WBUF_DEPTH
         self.stats.cycles.append(dw_engine_cycles(
             ksize=ins.ksize, stride=ins.stride, units=cb * ins.out_h * -(-ins.out_w // N),
-            param_words=cb * N * isa.PARAM_WORDS, weight_words=cb * T))
+            param_words=(1 if ins.uniform else cb * N) * isa.PARAM_WORDS, weight_words=nb * T))
         self.stats.macs.append(P * T * cb * N)
 
     def _maxpool(self, ins: Instr):

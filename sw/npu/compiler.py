@@ -231,11 +231,12 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
             if mq is None or not 2 <= k <= 3 or stride not in (1, 2):
                 raise NotImplementedError(f"{L['name']}: AVGPOOL needs a {k}x{k} window inside the "
                                           f"input, k <= 3, stride 1/2 (or 1x1 output) and odd k*k")
-            w_base = prog.add_weights(np.ones((cb * n, N), np.int64), L["name"])
-            p_base = prog.add_raw_params([(0, *mq)] * (cb * N))
+            # uniform: one param entry and one channel block's weights serve every channel
+            w_base = prog.add_weights(np.ones((n, N), np.int64), L["name"])
+            p_base = prog.add_raw_params([(0, *mq)])
             common.update(stride=stride, pad=0, in_zp=0, out_zp=0)
             prog.instrs.append(Instr(Op.DWCONV, in_cb=cb, ksize=k, w_base=w_base, p_base=p_base,
-                                     rmode=RMODE_SINGLE, **common))
+                                     rmode=RMODE_SINGLE, uniform=1, **common))
         else:
             raise NotImplementedError(L["op"])
 

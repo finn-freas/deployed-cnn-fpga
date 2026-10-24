@@ -132,6 +132,19 @@ vww01, and board power from a USB power meter (energy per inference).
   in the pool). The default timeout is cells²/8 attempts, which looks like a hang. All
   address arithmetic is now incremental or shift-and-add, so the DSPs are only the 64 PEs
   and the two requant multipliers.
+- **Second wall: LUT positions.** On Gowin a flip-flop's D input comes only from its own
+  slice's LUT, so nextpnr gives every register fed by a register (or by a RAM, or by a LUT
+  that already drives another register) a pass-through LUT. The utilisation report leaves
+  these out. Real demand = LUT + ALU + such registers was 21.4k of 20.7k, which is why the
+  placer couldn't legalise (confirmed on the routed memdp probe: every DFF sits behind its
+  own LUT). Reductions: PE shadows latch the adder output on a group's *last* value
+  (no capture wave); a shared single/double-rounding requant path; 26-bit accumulators;
+  params, transposer (diagonal byte RAMs) and row tables in LUT RAM; AVGPOOL lowered to a
+  ones-weight DWCONV (pool unit MAXPOOL-only); units read the sequencer's instruction;
+  and a depthwise mode with *no line buffer*: the array keeps only its row skew, so row r
+  needs exactly the word arriving from activation memory, and each tap is issued with the
+  read of its word (stride 2 reads even columns before odd ones). Demand 21.4k → 15.4k
+  (74%); the analytical placer now converges.
 
 ## Milestones
 
