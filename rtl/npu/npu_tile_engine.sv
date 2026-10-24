@@ -120,7 +120,12 @@ module npu_tile_engine
     endfunction
 
     // ---------------------------------------------------------------- producer (gather)
-    typedef enum logic [2:0] {P_IDLE, P_WAIT_BUF, P_SETUP, P_GATHER, P_TAIL} pstate_e;
+    typedef enum logic [1:0] {P_IDLE, P_WAIT_BUF, P_SETUP, P_GATHER} pstate_e;
+    // A unit is published (its half marked full) when the transposer writes its last block;
+    // meanwhile the producer already gathers the next unit. pub_* hold the published unit.
+    logic        pub_half, pub_last;
+    logic [13:0] pub_p0;
+    logic [5:0]  pub_g;
     pstate_e pstate;
     logic        gbuf;              // A_T half being filled
     logic [13:0] p_p0;              // unit's tile: first output pixel
@@ -176,6 +181,7 @@ module npu_tile_engine
     logic [2:0]  d_r, d_sh;
     logic [7:0]  d_k;               // k-word
     logic        d_rowok;
+    logic        d_half, d_lastu;    // A_T half of the unit; last read of the unit
     logic [3:0]  d_kj;
     logic signed [9:0] d_lo, d_hi;
     logic [WORD_W-1:0] w0;          // packed: first aligned word of the window
@@ -186,6 +192,7 @@ module npu_tile_engine
     logic [1:0][N-1:0][WORD_W-1:0] tb;
     logic        tb_sel;            // buffer being filled
     logic        wo_active, wo_buf;
+    logic        wo_half, wo_lastu;  // A_T half of the block being written; last block of its unit
     logic [2:0]  wo_cnt;
     logic [7:0]  wo_kw;
 
@@ -205,7 +212,7 @@ module npu_tile_engine
 
     always_comb begin
         at_we    = wo_active;
-        at_waddr = {gbuf, KA_AW'({wo_kw, wo_cnt})};
+        at_waddr = {wo_half, KA_AW'({wo_kw, wo_cnt})};
         at_wdata = '0;
         for (int r = 0; r < N; r++) at_wdata[8 * r +: 8] = 8'(tb[wo_buf][r] >> (8 * wo_cnt));
     end
@@ -338,7 +345,16 @@ module npu_tile_engine
                 wo_buf    <= tb_sel;
                 wo_cnt    <= '0;
                 wo_kw     <= d_k;
+                wo_half   <= d_half;
+                wo_lastu  <= d_lastu;
             end
+        end
+        if (wo_active && wo_lastu && wo_cnt == 3'(N - 1)) begin
+            // the unit's last block is written: publish it to the consumer
+            full[pub_half]      <= 1'b1;
+            unit_p0[pub_half]   <= pub_p0;
+            unit_g[pub_half]    <= pub_g;
+            unit_last[pub_half] <= pub_last;
         end
         if (wo_active && !(d_v && (!pk_mode || d_ph) && d_r == 3'(N - 1))) begin
             wo_cnt <= wo_cnt + 3'd1;
@@ -576,8 +592,51 @@ module npu_tile_engine
                     d_rowok <= row_ok;
                     d_lo    <= lo_m;
                     d_hi    <= hi_m;
+                    d_half  <= gbuf;
+                    d_lastu <= gather_last;
                     if (gather_last) begin
-                        pstate <= P_TAIL;
+                        // last read issued: latch the unit for publishing, advance to the next
+                        // unit (DWCONV channel blocks inside a tile; group mode tiles inside a
+                        // group; cached CONV tiles only) and start on it right away
+                        logic last_unit;
+                        pub_half <= gbuf;
+                        pub_p0   <= p_p0;
+                        pub_g    <= p_g;
+                        gbuf     <= !gbuf;
+                        if (is_dw) begin
+                            last_unit = p_last_g && p_last_tile;
+                            if (!p_last_g) begin
+                                p_g <= p_g + 6'd1;
+                                p_new_tile <= 1'b0;
+                            end else begin
+                                p_g <= '0;
+                                p_p0 <= p_p0 + 14'(N);
+                                p_oy <= p_noy;
+                                p_ox <= p_nox;
+                                p_new_tile <= 1'b1;
+                            end
+                        end else if (!cached) begin
+                            last_unit = p_last_g && p_last_tile;
+                            p_new_tile <= 1'b1;
+                            if (!p_last_tile) begin
+                                p_p0 <= p_p0 + 14'(N);
+                                p_oy <= p_noy;
+                                p_ox <= p_nox;
+                            end else begin
+                                p_g  <= p_g + 6'd1;
+                                p_p0 <= '0;
+                                p_oy <= '0;
+                                p_ox <= '0;
+                            end
+                        end else begin
+                            last_unit = p_last_tile;
+                            p_p0 <= p_p0 + 14'(N);
+                            p_oy <= p_noy;
+                            p_ox <= p_nox;
+                            p_new_tile <= 1'b1;
+                        end
+                        pub_last <= last_unit;
+                        pstate   <= last_unit ? P_IDLE : P_WAIT_BUF;
                     end else if (pk_mode && !ph) begin
                         ph <= 1'b1;                     // second aligned word of this window
                     end else if (gr != 3'(N - 1)) begin
@@ -609,51 +668,6 @@ module npu_tile_engine
                             kc <= kc + 6'd1;
                         end
                     end
-                end
-
-                // last data landed and the transposer has written it: publish the unit
-                P_TAIL: if (!d_v && !wo_active) begin
-                    logic last_unit;
-                    full[gbuf]      <= 1'b1;
-                    unit_p0[gbuf]   <= p_p0;
-                    unit_g[gbuf]    <= p_g;
-                    gbuf            <= !gbuf;
-                    // advance: DWCONV channel blocks inside a tile; group mode tiles inside
-                    // a group; cached CONV tiles only
-                    if (is_dw) begin
-                        last_unit = p_last_g && p_last_tile;
-                        if (!p_last_g) begin
-                            p_g <= p_g + 6'd1;
-                            p_new_tile <= 1'b0;
-                        end else begin
-                            p_g <= '0;
-                            p_p0 <= p_p0 + 14'(N);
-                            p_oy <= p_noy;
-                            p_ox <= p_nox;
-                            p_new_tile <= 1'b1;
-                        end
-                    end else if (!cached) begin
-                        last_unit = p_last_g && p_last_tile;
-                        p_new_tile <= 1'b1;
-                        if (!p_last_tile) begin
-                            p_p0 <= p_p0 + 14'(N);
-                            p_oy <= p_noy;
-                            p_ox <= p_nox;
-                        end else begin
-                            p_g  <= p_g + 6'd1;
-                            p_p0 <= '0;
-                            p_oy <= '0;
-                            p_ox <= '0;
-                        end
-                    end else begin
-                        last_unit = p_last_tile;
-                        p_p0 <= p_p0 + 14'(N);
-                        p_oy <= p_noy;
-                        p_ox <= p_nox;
-                        p_new_tile <= 1'b1;
-                    end
-                    unit_last[gbuf] <= last_unit;
-                    pstate <= last_unit ? P_IDLE : P_WAIT_BUF;
                 end
 
                 default: pstate <= P_IDLE;

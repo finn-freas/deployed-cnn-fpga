@@ -84,9 +84,9 @@ def tile_engine_cycles(*, K: int, G: int, tiles: int, gather_issue: int, gather_
     for u, (ti, g, new_tile, wload) in enumerate(units):
         # ---- producer gathers unit u into half u % 2
         w = max(p_t, release[u - 2] if u >= 2 else 0)        # P_WAIT_BUF passes
-        e = w + (TILE_SETUP if new_tile else 0) + gather_issue + gather_tail   # last P_TAIL cycle
-        ready[u] = e + 1
-        p_t = e + 1
+        last = w + (TILE_SETUP if new_tile else 0) + gather_issue   # last read issued
+        ready[u] = last + gather_tail                         # published as the transposer finishes
+        p_t = last + 1                                        # next unit starts right away
         # ---- consumer streams unit u (group mode: once its group's weights have landed)
         s = max(c_t, ready[u], load_visible(g) if not cached else 0) + 1   # C_WAIT_FULL passes
         for _ in range(jobs_per_unit):
