@@ -4,6 +4,7 @@
 // 0..EXT_DEPTH-1 directly, so the weights/params image sits at the start):
 //   word BOOT_W     header {magic 6'b101101, img_c[2:0], img_w[6:0], in_words[15:0],
 //                           in_base[15:0], n_beats[15:0]}
+//   word BOOT_W+1   ext_words: length of the weights/params image
 //   then            the program: n_beats 32-bit instruction beats, two per word (low first)
 //   then            a demo image: in_words words of packed uint8 HWC bytes
 // At reset the boot loader copies the program into instruction memory and the demo image
@@ -13,6 +14,10 @@
 // UART (8N1): send 0x49 ('I') then in_words*8 image bytes; the image is written to
 // activation memory, inference runs, and the reply is 0xA5, class, score, cycles (4 bytes,
 // little-endian). Send the next image only after the reply.
+//
+// EXT_SDRAM = 1: at boot the weights/params image is first copied from flash into the
+// in-package SDRAM, and the core's external-store port reads the SDRAM (one word per two
+// cycles instead of one per ~130 over 1-bit SPI).
 //
 // While an image streams in, every second pixel of every second row (from 96x96) becomes a
 // 4-bit gray pixel of a 48x48 thumbnail, which the display reads through `thumb_*`.
@@ -26,7 +31,8 @@ module npu_system
     parameter int          BAUD       = 1_000_000,
     parameter logic [23:0] FLASH_BASE = 24'h40_0000,
     parameter int          BOOT_W     = 'h10000,
-    parameter int          SPI_DIV    = 1
+    parameter int          SPI_DIV    = 1,
+    parameter bit          EXT_SDRAM  = 1'b0
 ) (
     input  wire logic        clk,
     input  wire logic        rst,
@@ -48,7 +54,21 @@ module npu_system
     output      logic [15:0] res_count,     // inferences run
     // thumbnail read port (1-cycle latency)
     input  wire logic [11:0] thumb_raddr,
-    output      logic [3:0]  thumb_rdata
+    output      logic [3:0]  thumb_rdata,
+    // SDRAM (EXT_SDRAM; dq split for simulation)
+    output      logic        sd_cke,
+    output      logic        sd_cs_n,
+    output      logic        sd_ras_n,
+    output      logic        sd_cas_n,
+    output      logic        sd_we_n,
+    output      logic [1:0]  sd_ba,
+    output      logic [10:0] sd_addr,
+    output      logic [3:0]  sd_dqm,
+    output      logic [31:0] sd_dq_o,
+    output      logic        sd_dq_oe,
+    /* verilator lint_off UNUSEDSIGNAL */
+    input  wire logic [31:0] sd_dq_i
+    /* verilator lint_on UNUSEDSIGNAL */
 );
 
     localparam int RAW = 17;                // reader word address width
@@ -99,13 +119,42 @@ module npu_system
         .rvalid(r_rvalid), .rdata(r_rdata),
         .spi_cs_n, .spi_clk, .spi_mosi, .spi_miso);
 
-    always_comb begin
-        r_req    = ld_own ? b_req : e_req;
-        r_addr   = ld_own ? b_addr : RAW'(e_addr);
-        r_len    = ld_own ? b_len : e_len;
-        e_ack    = !ld_own && r_ack;
-        e_rvalid = !ld_own && r_rvalid;
-        e_rdata  = r_rdata;
+    // SDRAM: written by the boot copy, read by the core
+    /* verilator lint_off UNUSEDSIGNAL */  // half of these are unused in each configuration
+    logic        m_ready, m_cal_err, m_rd_ack, m_rvalid, m_wr_req, m_wr_ack;
+    logic [63:0] m_rdata, m_wr_data;
+    logic [16:0] m_wr_addr;
+    logic [31:0] ext_words;
+    /* verilator lint_on UNUSEDSIGNAL */
+
+    if (EXT_SDRAM) begin : g_sdram
+        sdram_ctrl #(.CLK_HZ(CLK_HZ)) u_sdram (
+            .clk, .rst, .ready(m_ready), .cal_err(m_cal_err),
+            .rd_req(e_req && !ld_own), .rd_addr(17'(e_addr)), .rd_len(e_len), .rd_ack(m_rd_ack),
+            .rvalid(m_rvalid), .rdata(m_rdata),
+            .wr_req(m_wr_req), .wr_addr(m_wr_addr), .wr_data(m_wr_data), .wr_ack(m_wr_ack),
+            .sd_cke, .sd_cs_n, .sd_ras_n, .sd_cas_n, .sd_we_n, .sd_ba, .sd_addr, .sd_dqm,
+            .sd_dq_o, .sd_dq_oe, .sd_dq_i);
+        always_comb begin
+            r_req    = b_req;
+            r_addr   = b_addr;
+            r_len    = b_len;
+            e_ack    = m_rd_ack;
+            e_rvalid = m_rvalid;
+            e_rdata  = m_rdata;
+        end
+    end else begin : g_flash
+        assign {m_ready, m_cal_err, m_rd_ack, m_rvalid, m_wr_ack, m_rdata} = '0;
+        assign {sd_cke, sd_cs_n, sd_ras_n, sd_cas_n, sd_we_n, sd_ba, sd_addr, sd_dqm} = '1;
+        assign {sd_dq_o, sd_dq_oe} = '0;
+        always_comb begin
+            r_req    = ld_own ? b_req : e_req;
+            r_addr   = ld_own ? b_addr : RAW'(e_addr);
+            r_len    = ld_own ? b_len : e_len;
+            e_ack    = !ld_own && r_ack;
+            e_rvalid = !ld_own && r_rvalid;
+            e_rdata  = r_rdata;
+        end
     end
 
     // ------------------------------------------------------------------ UART
@@ -181,11 +230,12 @@ module npu_system
 
     // ------------------------------------------------------------------ control
     typedef enum logic [3:0] {
-        B_HDR, B_HDR_WAIT, B_PROG, B_PROG_WR, B_IMG, B_IMG_BYTES, B_RUN, B_WAIT, B_IDLE,
-        B_UART_IMG, B_ERR
+        B_HDR, B_HDR_WAIT, B_COPY_REQ, B_COPY, B_PROG_REQ, B_PROG, B_PROG_WR, B_IMG,
+        B_IMG_BYTES, B_RUN, B_WAIT, B_IDLE, B_UART_IMG, B_ERR
     } bstate_e;
     bstate_e bs;
     logic [15:0] prog_words;
+    logic        hdr2;                      // header word 1 is next
     logic [63:0] w_buf;                     // flash word being unpacked
     logic [2:0]  u_byte;                    // byte of w_buf to feed (flash image)
     logic        u_v;                       // w_buf holds bytes to feed
@@ -196,7 +246,7 @@ module npu_system
     logic [55:0] tx_msg;
 
     assign booted = (bs == B_RUN) || (bs == B_WAIT) || (bs == B_IDLE) || (bs == B_UART_IMG);
-    assign boot_err = (bs == B_ERR);
+    assign boot_err = (bs == B_ERR) || m_cal_err;
     assign busy   = c_busy;
     assign ld_own = !booted;
 
@@ -252,35 +302,63 @@ module npu_system
             reply     <= 1'b0;
             tx_idx    <= '0;
             u_v       <= 1'b0;
+            m_wr_req  <= 1'b0;
         end else begin
             unique case (bs)
                 // ---- boot: header word
                 B_HDR: begin
                     b_req  <= 1'b1;
                     b_addr <= RAW'(BOOT_W);
-                    b_len  <= 16'd1;
+                    b_len  <= 16'd2;
+                    hdr2   <= 1'b0;
                     if (b_req && r_ack) begin
                         b_req <= 1'b0;
                         bs    <= B_HDR_WAIT;
                     end
                 end
 
-                B_HDR_WAIT: if (r_rvalid) begin
+                B_HDR_WAIT: if (r_rvalid && hdr2) begin
+                    ext_words <= r_rdata[31:0];
+                    bs        <= EXT_SDRAM ? B_COPY_REQ : B_PROG_REQ;
+                end else if (r_rvalid) begin
+                    hdr2       <= 1'b1;
                     n_beats    <= r_rdata[15:0];
                     in_base    <= r_rdata[31:16];
                     in_words   <= r_rdata[47:32];
                     img_w      <= r_rdata[54:48];
                     img_c      <= r_rdata[57:55];
                     prog_words <= 16'((r_rdata[15:0] + 16'd1) >> 1);
-                    if (r_rdata[63:58] != 6'b101101) begin
-                        bs <= B_ERR;
-                    end else begin
-                        b_req  <= 1'b1;
-                        b_addr <= RAW'(BOOT_W + 1);
-                        b_len  <= 16'((r_rdata[15:0] + 16'd1) >> 1);
-                        beat   <= '0;
-                        bs     <= B_PROG;
+                    if (r_rdata[63:58] != 6'b101101) bs <= B_ERR;
+                end
+
+                // ---- (EXT_SDRAM) weights/params: flash -> SDRAM, one word at a time
+                B_COPY_REQ: if (m_ready) begin
+                    b_req     <= 1'b1;
+                    b_addr    <= '0;
+                    b_len     <= 16'(ext_words);
+                    m_wr_addr <= '0;
+                    bs        <= B_COPY;
+                end
+
+                B_COPY: begin
+                    if (b_req && r_ack) b_req <= 1'b0;
+                    if (r_rvalid) begin                 // flash words are >100 cycles apart
+                        m_wr_req  <= 1'b1;
+                        m_wr_data <= r_rdata;
                     end
+                    if (m_wr_req && m_wr_ack) begin
+                        m_wr_req  <= 1'b0;
+                        m_wr_addr <= m_wr_addr + 17'd1;
+                        if (32'(m_wr_addr) + 32'd1 == ext_words) bs <= B_PROG_REQ;
+                    end
+                end
+
+                B_PROG_REQ: begin
+                    b_req  <= 1'b1;
+                    b_addr <= RAW'(BOOT_W + 2);
+                    b_len  <= prog_words;
+                    beat   <= '0;
+                    bs     <= B_PROG;
                 end
 
                 // ---- program words: two instruction beats each
@@ -307,7 +385,7 @@ module npu_system
                 // ---- demo image (also after `run`): words, fed to the sink byte by byte
                 B_IMG: begin
                     b_req   <= 1'b1;
-                    b_addr  <= RAW'(BOOT_W + 1) + RAW'(prog_words);
+                    b_addr  <= RAW'(BOOT_W + 2) + RAW'(prog_words);
                     b_len   <= in_words;
                     s_reset <= 1'b1;
                     bs      <= B_IMG_BYTES;

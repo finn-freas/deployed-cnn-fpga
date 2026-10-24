@@ -218,6 +218,14 @@ module npu_tile_engine
     logic               inb, row_ok;
     logic signed [19:0] g_addr;     // word address (word mode) / byte address (packed)
     logic signed [15:0] lo_m, hi_m; // packed: window bytes m with lo_m <= m < hi_m are in bounds
+    logic [3:0]  pk_s, pk_e, pk_p;  // packed: bytes b of this window with pk_s <= b < pk_e are
+                                    // in bounds; bytes b >= pk_p are past the kernel row
+    // clamp(v - m0, 0, N) for the window starting at byte m0 = kj*N
+    function automatic logic [3:0] edge8(input logic signed [15:0] v, input logic [3:0] win);
+        logic signed [15:0] d;
+        d = v - 16'(signed'({1'b0, win, 3'b000}));
+        return (d < 0) ? 4'd0 : (d > 16'sd8) ? 4'd8 : 4'(d);
+    endfunction
     always_comb begin
         iy     = row_iy0[gr] + 10'(ky);
         ix     = row_ix0[gr] + 10'(kx);
@@ -226,6 +234,9 @@ module npu_tile_engine
         g_addr = (pk_mode ? 20'({I.in_base, 3'b000}) : 20'(I.in_base)) + row_base[gr] + 20'(koff);
         lo_m   = (row_ix0[gr] < 0) ? -16'(row_cxb[gr]) : 16'sd0;
         hi_m   = 16'(signed'({3'b0, RS})) - 16'(row_cxb[gr]);
+        pk_s   = edge8(lo_m, kj);
+        pk_e   = edge8(hi_m, kj);
+        pk_p   = edge8(16'(signed'({7'b0, ksc})), kj);
     end
 
     // read-data pipeline (act memory has 1-cycle latency)
@@ -234,8 +245,7 @@ module npu_tile_engine
     logic [7:0]  d_k;               // k-word
     logic        d_rowok;
     logic        d_half, d_lastu;    // A_T half of the unit; last read of the unit
-    logic [3:0]  d_kj;
-    logic signed [15:0] d_lo, d_hi;
+    logic [3:0]  d_s, d_e, d_p;
     logic [WORD_W-1:0] w0;          // packed: first aligned word of the window
 
     // double-buffered N x N byte transposer (both modes): rows are written one per cycle,
@@ -255,13 +265,11 @@ module npu_tile_engine
     logic [WORD_W-1:0] pk_row;
     always_comb begin
         logic [WORD_W-1:0]   win;
-        logic signed [15:0]  m;
         win = WORD_W'({act_rdata, w0} >> (8 * d_sh));
         for (int b = 0; b < N; b++) begin
-            m = 16'(signed'({1'b0, d_kj, 3'b000})) + 16'(b);
-            if (m >= 16'(signed'({1'b0, ksc})))   pk_row[8 * b +: 8] = 8'd0;        // past the kernel row
-            else if (!d_rowok || m < d_lo || m >= d_hi) pk_row[8 * b +: 8] = I.in_zp;   // padding
-            else                                       pk_row[8 * b +: 8] = 8'(win >> (8 * b)) + I.in_zp;
+            if (4'(b) >= d_p)                                pk_row[8 * b +: 8] = 8'd0;   // past the kernel row
+            else if (!d_rowok || 4'(b) < d_s || 4'(b) >= d_e) pk_row[8 * b +: 8] = I.in_zp; // padding
+            else                                              pk_row[8 * b +: 8] = 8'(win >> (8 * b)) + I.in_zp;
         end
     end
 
@@ -748,10 +756,10 @@ module npu_tile_engine
                     d_pad   <= !inb;
                     d_ph    <= ph;
                     d_sh    <= g_addr[2:0];
-                    d_kj    <= kj;
+                    d_s     <= pk_s;
+                    d_e     <= pk_e;
+                    d_p     <= pk_p;
                     d_rowok <= row_ok;
-                    d_lo    <= lo_m;
-                    d_hi    <= hi_m;
                     d_half  <= gbuf;
                     d_lastu <= gather_last;
                     if (gather_last) begin

@@ -84,14 +84,14 @@ async def system_boot_and_uart(dut):
     dut.rst.value = 0
 
     # ---- boot run on the demo image
-    await with_timeout(RisingEdge(dut.res_valid), 200, "ms")
+    await with_timeout(RisingEdge(dut.res_valid), 2000, "ms")
     await FallingEdge(dut.clk)
     assert int(dut.boot_err.value) == 0
     logits = gold[last][0].reshape(-1)
     cls, score = int(dut.res_class.value), dut.res_score.value.to_signed()
     assert cls == int(np.argmax(logits)) and score == int(logits.max()), "boot run result"
     cyc = int(dut.res_cycles.value)
-    dut._log.info(f"boot run: class {cls} score {score}, {cyc} cycles with weights over 1-bit SPI")
+    dut._log.info(f"boot run: class {cls} score {score}, {cyc} cycles")
 
     if img0.shape[1] == 96:
         exp = thumbnail(img0)
@@ -119,10 +119,18 @@ async def system_boot_and_uart(dut):
 
 SOURCES = ["npu/npu_pkg.sv", "common/sdpram.sv", "npu/npu_pe.sv", "npu/npu_array.sv",
            "npu/npu_requant.sv", "npu/npu_tile_engine.sv", "npu/npu_pool.sv", "npu/npu_core.sv",
-           "common/spi_flash_reader.sv", "board/uart.sv", "board/npu_system.sv",
-           "sim/spi_flash_model.sv", "sim/npu_system_tb_top.sv"]
+           "common/spi_flash_reader.sv", "board/uart.sv", "board/sdram_ctrl.sv",
+           "board/npu_system.sv", "sim/spi_flash_model.sv", "sim/sdram_model.sv",
+           "sim/npu_system_tb_top.sv"]
 
 
 def test_npu_system():
+    """Weights over 1-bit SPI flash."""
     from sim import run
     run("npu_system_tb_top", SOURCES, "test_npu_system")
+
+
+def test_npu_system_sdram():
+    """Weights copied to SDRAM at boot, inference reads them from there."""
+    from sim import run
+    run("npu_system_tb_top", SOURCES, "test_npu_system", parameters={"EXT_SDRAM": 1})

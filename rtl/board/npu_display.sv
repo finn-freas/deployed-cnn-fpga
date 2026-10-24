@@ -5,9 +5,11 @@
 //   right: text (5x7 font, x2): title, verdict, score, latency in microseconds, run count
 //          and status
 //
-// Pipeline: video_timing outputs (cycle 0) -> thumbnail read and font lookup (cycle 1) ->
-// colour (cycle 2); de/hsync/vsync are delayed to match. Latency = cycles * 1e6 / NPU_HZ,
-// formed by shift-and-add when a new result arrives, then converted to decimal.
+// Regions and addresses come from counters stepped by the raster (flags flip on equality
+// with the region edges, one cycle ahead), not from comparators. Pipeline: raster (cycle 0)
+// -> thumbnail RAM and font ROM read (cycle 1) -> colour (cycle 2); de/hsync/vsync are
+// delayed to match. Latency = cycles * 1e6 / NPU_HZ, formed by shift-and-add when a new
+// result arrives, then converted to decimal.
 
 `default_nettype none
 
@@ -82,67 +84,64 @@ module npu_display #(
     bin2bcd #(.BITS(8), .DIGITS(3)) u_sc (.clk, .rst, .start(conv), .bin(sc_mag), .bcd(sc_bcd), .busy(sc_busy));
     bin2bcd #(.BITS(16), .DIGITS(5)) u_rn (.clk, .rst, .start(conv), .bin(res_count), .bcd(rn_bcd), .busy(rn_busy));
 
-    // decimal digits as characters, leading zeros blank
-    function automatic logic [7:0] dch(input logic [3:0] d, input logic blank);
-        return blank ? 8'h20 : 8'h30 + 8'(d);
+    localparam int NCH = 12, NL = 6;
+
+    // decimal digit as a character, blank if a leading zero
+    function automatic logic [6:0] dch(input logic [3:0] d, input logic blank);
+        return blank ? 7'h20 : 7'h30 + 7'(d);
     endfunction
 
-    // ------------------------------------------------------------------ text lines
-    localparam int TX = 440, TY0 = 56, TDY = 40, NCH = 12, NL = 6;
-    logic [7:0] txt [NL][NCH];
-    logic       person;
+    // character c of a 12-character string literal (packed: character 0 in the top byte)
+    function automatic logic [6:0] str(input logic [8 * NCH - 1:0] s, input int c);
+        return (c >= 0 && c < NCH) ? 7'(s >> (8 * (NCH - 1 - c))) : 7'h20;
+    endfunction
+
+    // ------------------------------------------------------------------ text: char at (line, col)
+    logic person;
     assign person = res_class == 8'd1;
 
+    logic [2:0] li;                         // text line under the raster
+    logic [3:0] col;                        // character column under the raster
+    logic [6:0] ch;
     always_comb begin
-        logic lz;
-        for (int l = 0; l < NL; l++)
-            for (int c = 0; c < NCH; c++) txt[l][c] = 8'h20;
-        // "VWW ON FPGA"
-        {txt[0][0], txt[0][1], txt[0][2], txt[0][4], txt[0][5]} = {"V", "W", "W", "O", "N"};
-        {txt[0][7], txt[0][8], txt[0][9], txt[0][10]} = {"F", "P", "G", "A"};
-        if (!res_valid) begin
-            {txt[1][0], txt[1][1], txt[1][2], txt[1][3]} = {"W", "A", "I", "T"};
-        end else if (person) begin
-            {txt[1][0], txt[1][1], txt[1][2], txt[1][3], txt[1][4], txt[1][5]} = {"P", "E", "R", "S", "O", "N"};
-        end else begin
-            {txt[1][0], txt[1][1], txt[1][3], txt[1][4], txt[1][5], txt[1][6], txt[1][7], txt[1][8]} =
-                {"N", "O", "P", "E", "R", "S", "O", "N"};
-        end
-        // "SCORE +nnn"
-        {txt[2][0], txt[2][1], txt[2][2], txt[2][3], txt[2][4]} = {"S", "C", "O", "R", "E"};
-        if (res_valid) begin
-            txt[2][6] = res_score < 0 ? "-" : "+";
-            txt[2][7] = dch(sc_bcd[11:8], sc_bcd[11:8] == 0);
-            txt[2][8] = dch(sc_bcd[7:4], sc_bcd[11:4] == 0);
-            txt[2][9] = dch(sc_bcd[3:0], 1'b0);
-        end
-        // "LAT nnnnnnUS"
-        {txt[3][0], txt[3][1], txt[3][2]} = {"L", "A", "T"};
-        {txt[3][10], txt[3][11]} = {"U", "S"};
-        if (res_valid) begin
-            lz = 1'b1;
-            for (int d = 5; d >= 0; d--) begin
-                lz = lz && (us_bcd[4*d +: 4] == 0) && d != 0;
-                txt[3][4 + 5 - d] = dch(us_bcd[4*d +: 4], lz);
+        int c;
+        c  = int'(col);
+        ch = 7'h20;
+        unique case (li)
+            3'd0: ch = str("VWW ON FPGA ", c);
+            3'd1: ch = !res_valid ? str("WAITING     ", c) : person ? str("PERSON      ", c) : str("NO PERSON   ", c);
+            3'd2: begin
+                ch = str("SCORE       ", c);
+                if (res_valid) begin
+                    if (c == 6) ch = res_score < 0 ? 7'h2D : 7'h2B;
+                    if (c == 7) ch = dch(sc_bcd[11:8], sc_bcd[11:8] == 0);
+                    if (c == 8) ch = dch(sc_bcd[7:4], sc_bcd[11:4] == 0);
+                    if (c == 9) ch = dch(sc_bcd[3:0], 1'b0);
+                end
             end
-        end
-        // "RUNS nnnnn"
-        {txt[4][0], txt[4][1], txt[4][2], txt[4][3]} = {"R", "U", "N", "S"};
-        lz = 1'b1;
-        for (int d = 4; d >= 0; d--) begin
-            lz = lz && (rn_bcd[4*d +: 4] == 0) && d != 0;
-            txt[4][5 + 4 - d] = dch(rn_bcd[4*d +: 4], lz);
-        end
-        // status
-        if (boot_err)
-            {txt[5][0], txt[5][1], txt[5][2], txt[5][3], txt[5][4], txt[5][6], txt[5][7], txt[5][8]} =
-                {"F", "L", "A", "S", "H", "E", "R", "R"};
-        else if (!booted)
-            {txt[5][0], txt[5][1], txt[5][2], txt[5][3], txt[5][4]} = {"B", "O", "O", "T", "."};
-        else if (busy)
-            {txt[5][0], txt[5][1], txt[5][2], txt[5][3]} = {"B", "U", "S", "Y"};
-        else
-            {txt[5][0], txt[5][1], txt[5][2], txt[5][3], txt[5][4]} = {"R", "E", "A", "D", "Y"};
+            3'd3: begin
+                ch = (c >= 10) ? str("US          ", c - 10) : str("LAT         ", c);
+                if (res_valid) begin
+                    if (c == 4) ch = dch(us_bcd[23:20], us_bcd[23:20] == 0);
+                    if (c == 5) ch = dch(us_bcd[19:16], us_bcd[23:16] == 0);
+                    if (c == 6) ch = dch(us_bcd[15:12], us_bcd[23:12] == 0);
+                    if (c == 7) ch = dch(us_bcd[11:8], us_bcd[23:8] == 0);
+                    if (c == 8) ch = dch(us_bcd[7:4], us_bcd[23:4] == 0);
+                    if (c == 9) ch = dch(us_bcd[3:0], 1'b0);
+                end
+            end
+            3'd4: begin
+                ch = str("RUNS        ", c);
+                if (c == 5) ch = dch(rn_bcd[19:16], rn_bcd[19:16] == 0);
+                if (c == 6) ch = dch(rn_bcd[15:12], rn_bcd[19:12] == 0);
+                if (c == 7) ch = dch(rn_bcd[11:8], rn_bcd[19:8] == 0);
+                if (c == 8) ch = dch(rn_bcd[7:4], rn_bcd[19:4] == 0);
+                if (c == 9) ch = dch(rn_bcd[3:0], 1'b0);
+            end
+            3'd5: ch = boot_err ? str("FLASH ERR   ", c) : !booted ? str("BOOT.       ", c) :
+                       busy ? str("BUSY        ", c) : str("READY       ", c);
+            default: ;
+        endcase
     end
 
     // ------------------------------------------------------------------ raster
@@ -151,53 +150,93 @@ module npu_display #(
     logic        act0, hs0, vs0, fs0;
     video_timing u_vt (.clk, .rst, .x, .y, .active(act0), .hsync(hs0), .vsync(vs0), .frame_start(fs0));
 
-    localparam int IX = 32, IY = 48, IS = 8 * 48, BW = 6;     // thumbnail origin, size, frame
-    logic in_img0, in_frame0, in_txt0, txt_bit0, txt_hi0;
-    logic in_img1, in_frame1, txt_bit1, txt_hi1, act1, hs1, vs1;
-    logic [7:0] f_ch, f_bits;
-    logic [2:0] f_row, f_col;
+    localparam int HT = 800;                                   // video_timing's line length
+    localparam int IX = 32, IY = 48, IS = 8 * 48, BW = 6;      // thumbnail origin, size, frame
+    localparam int TX = 440, TY0 = 56, TDY = 40;               // text origin, line pitch
 
-    always_comb begin
-        logic [10:0] dx, tx;
-        logic [9:0]  dy, ly;
-        logic [5:0]  ty;
-        logic [2:0]  li;
-        logic        hit;
-        in_img0   = x >= 11'(IX) && x < 11'(IX + IS) && y >= 10'(IY) && y < 10'(IY + IS);
-        in_frame0 = x >= 11'(IX - BW) && x < 11'(IX + IS + BW) && y >= 10'(IY - BW) && y < 10'(IY + IS + BW);
-        dx = x - 11'(IX);
-        dy = y - 10'(IY);
-        ty = 6'(dy >> 3);
-        thumb_raddr = {1'b0, ty, 5'b0} + {2'b0, ty, 4'b0} + 12'(dx >> 3);
-        // text: which line, which character, which glyph row/column
-        li  = '0;
-        hit = 1'b0;
-        ly  = '0;
-        for (int l = 0; l < NL; l++)
-            if (y >= 10'(TY0 + TDY * l) && y < 10'(TY0 + TDY * l + 16)) begin
-                li  = 3'(l);
-                hit = 1'b1;
-                ly  = y - 10'(TY0 + TDY * l);
-            end
-        tx      = x - 11'(TX);
-        in_txt0 = hit && x >= 11'(TX) && x < 11'(TX + 16 * NCH);
-        f_ch    = in_txt0 ? txt[li][4'(tx >> 4)] : 8'h20;
-        f_row   = 3'(ly >> 1);
-        f_col   = 3'(tx >> 1);
-        txt_hi0 = (li == 3'd1);
-    end
-
-    font_rom u_font (.ch(f_ch), .row(f_row), .bits(f_bits));
-    assign txt_bit0 = f_bits[3'd7 - f_col];
+    // region flags, aligned with x/y: set/cleared when the raster reaches the edge
+    logic img_x, img_y, frm_x, frm_y, txt_x, txt_y;
+    logic [2:0]  sx, sy;                    // position within a thumbnail pixel
+    logic [5:0]  tcol;
+    logic [11:0] trow;                      // thumbnail row * 48
+    logic [3:0]  cx;                        // position within a text cell (x)
+    logic [5:0]  lp;                        // position within a text line pitch (y)
+    logic        eol;
+    assign eol = (x == 11'(HT - 1));
 
     always_ff @(posedge clk) begin
-        in_img1   <= in_img0;
-        in_frame1 <= in_frame0;
-        txt_bit1  <= txt_bit0;
-        txt_hi1   <= txt_hi0;
+        if (rst) begin
+            {img_x, img_y, frm_x, frm_y, txt_x, txt_y} <= '0;
+            li <= '0;
+            lp <= '0;
+        end else begin
+            // ---- horizontal
+            if (x == 11'(IX - BW - 1))      frm_x <= 1'b1;
+            if (x == 11'(IX + IS + BW - 1)) frm_x <= 1'b0;
+            if (x == 11'(IX - 1)) begin
+                img_x <= 1'b1;
+                sx    <= '0;
+                tcol  <= '0;
+            end else if (img_x) begin
+                sx <= sx + 3'd1;
+                if (sx == 3'd7) tcol <= tcol + 6'd1;
+            end
+            if (x == 11'(IX + IS - 1)) img_x <= 1'b0;
+            if (x == 11'(TX - 1)) begin
+                txt_x <= 1'b1;
+                cx    <= '0;
+                col   <= '0;
+            end else if (txt_x) begin
+                cx <= cx + 4'd1;
+                if (cx == 4'd15) col <= col + 4'd1;
+            end
+            if (x == 11'(TX + 16 * NCH - 1)) txt_x <= 1'b0;
+            // ---- vertical, at the end of each line
+            if (eol) begin
+                if (y == 10'(IY - BW - 1))      frm_y <= 1'b1;
+                if (y == 10'(IY + IS + BW - 1)) frm_y <= 1'b0;
+                if (y == 10'(IY - 1)) begin
+                    img_y <= 1'b1;
+                    sy    <= '0;
+                    trow  <= '0;
+                end else if (img_y) begin
+                    sy <= sy + 3'd1;
+                    if (sy == 3'd7) trow <= trow + 12'd48;
+                end
+                if (y == 10'(IY + IS - 1)) img_y <= 1'b0;
+                if (y == 10'(TY0 - 1)) begin
+                    txt_y <= 1'b1;
+                    lp    <= '0;
+                    li    <= '0;
+                end else if (txt_y) begin
+                    lp <= lp + 6'd1;
+                    if (lp == 6'(TDY - 1)) begin
+                        lp <= '0;
+                        li <= li + 3'd1;
+                        if (li == 3'(NL - 1)) txt_y <= 1'b0;
+                    end
+                end
+            end
+        end
+    end
+    assign thumb_raddr = trow + 12'(tcol);
+
+    // ------------------------------------------------------------------ cycle 1: reads
+    logic [7:0] f_bits;
+    font_rom u_font (.clk, .ch, .row(lp[3:1]), .bits(f_bits));
+
+    logic in_img1, in_frame1, in_txt1, txt_hi1, act1, hs1, vs1;
+    logic [2:0] gcol1;
+    always_ff @(posedge clk) begin
+        in_img1   <= img_x && img_y;
+        in_frame1 <= frm_x && frm_y;
+        in_txt1   <= txt_x && txt_y && lp < 6'd16;
+        txt_hi1   <= (li == 3'd1);
+        gcol1     <= cx[3:1];
         act1 <= act0; hs1 <= hs0; vs1 <= vs0;
     end
 
+    // ------------------------------------------------------------------ cycle 2: colour
     always_ff @(posedge clk) begin
         logic [7:0] rr, gg, bb, gray;
         gray = {thumb_rdata, thumb_rdata};
@@ -208,7 +247,7 @@ module npu_display #(
             else             {rr, gg, bb} = {8'd220, 8'd50, 8'd40};
         end
         if (in_img1) {rr, gg, bb} = {gray, gray, gray};
-        if (txt_bit1) begin
+        if (in_txt1 && f_bits[3'd7 - gcol1]) begin
             if (txt_hi1 && res_valid) {rr, gg, bb} = person ? {8'd60, 8'd255, 8'd90} : {8'd255, 8'd80, 8'd60};
             else                      {rr, gg, bb} = {8'd235, 8'd235, 8'd235};
         end

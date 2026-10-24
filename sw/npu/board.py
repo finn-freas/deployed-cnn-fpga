@@ -4,8 +4,8 @@
                                                                      (run from sw/)
 
 Layout in 64-bit words from FLASH_BASE (0x400000): the external-store image (weights and
-params) at word 0, then at BOOT_W a header, the program (two 32-bit instruction beats per
-word) and a demo image (packed uint8 HWC bytes). --program writes it with openFPGALoader
+params) at word 0, then at BOOT_W a header, the external-store image's length, the
+program (two 32-bit instruction beats per word) and a demo image (packed uint8 HWC bytes). --program writes it with openFPGALoader
 next to the bitstream (which sits at the start of the same flash).
 """
 
@@ -24,7 +24,7 @@ MAGIC = 0b101101
 
 
 def boot_words(prog, image_u8: np.ndarray) -> list[int]:
-    """Header + program + demo image, as uint64 words."""
+    """Header (2 words) + program + demo image, as uint64 words."""
     meta = prog.meta["input"]
     h, w, c = meta["h"], meta["w"], meta["c"]
     img = np.asarray(image_u8, np.uint8).reshape(h, w, c)
@@ -39,7 +39,7 @@ def boot_words(prog, image_u8: np.ndarray) -> list[int]:
     assert w < 128 and c < 8
     header = (len(beat_list) | meta["base"] << 16 | in_words << 32 | w << 48 | c << 55 | MAGIC << 58)
     prog_words = [beat_list[i] | beat_list[i + 1] << 32 for i in range(0, len(beat_list), 2)]
-    return [header] + prog_words + np.frombuffer(buf.tobytes(), "<u8").tolist()
+    return [header, len(prog.ext_words())] + prog_words + np.frombuffer(buf.tobytes(), "<u8").tolist()
 
 
 def flash_words(prog, image_u8: np.ndarray) -> list[int]:
