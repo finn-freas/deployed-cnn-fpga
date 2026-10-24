@@ -37,45 +37,53 @@ def ext_load_cycles(words: int) -> int:
     return EXT_LATENCY + 5 - EXT_CYCLES_PER_WORD + words * EXT_CYCLES_PER_WORD
 
 
-def tile_engine_cycles(*, K: int, G: int, tiles: int, gather: int, dw: bool, cached: bool,
-                       param_words: int, weight_words: int) -> int:
-    """Cycle-level replica of npu_tile_engine's control FSM (overlapped drain, O3).
+def tile_engine_cycles(*, K: int, G: int, tiles: int, gather_issue: int, gather_tail: int,
+                       dw: bool, cached: bool, param_words: int, weight_words: int) -> int:
+    """Event-level replica of npu_tile_engine (overlapped drain O3 + double-buffered A_T).
 
-    `gather` is the per-gather issue + tail time. Injections (a job's first value, or a
-    capture wave) must be PERIOD_MIN cycles apart; a wait state lasts at least 1 cycle.
+    Units: cached CONV -> one per tile (all G jobs); DWCONV -> one per (tile, channel
+    block); group mode -> one per (group, tile). A producer gathers units into two A_T
+    halves; a consumer streams each unit's jobs, then releases the half. Injections must be
+    PERIOD_MIN cycles apart; every wait state lasts at least one cycle; a flag set in a
+    state's last cycle is visible the cycle after.
     """
-    t = 0
+    t = 1 + ext_load_cycles(param_words)                      # S_INIT, params
+    if cached:
+        t += ext_load_cycles(weight_words)                    # whole layer's weights
+    # units in order: (tile index, group, new_tile, needs_weight_load)
+    units = []
+    if dw:
+        units = [(ti, g, g == 0, False) for ti in range(tiles) for g in range(G)]
+    elif cached:
+        units = [(ti, 0, True, False) for ti in range(tiles)]
+    else:
+        units = [(ti, g, True, ti == 0) for g in range(G) for ti in range(tiles)]
+    jobs_per_unit = G if (cached and not dw) else 1
+
+    ready = [0] * len(units)            # cycle the unit's full flag becomes visible
+    release = [0] * len(units)          # cycle the unit's release becomes visible
+    p_t = t + 1                         # producer: first P_WAIT_BUF cycle
+    c_t = t + 1                         # consumer: first C_WAIT_FULL cycle
     last_inj = -10**9
-
-    def wait():                     # S_INJ_WAIT / S_CAP_WAIT: pass once t >= last_inj + PERIOD_MIN
-        nonlocal t
-        t = max(t, last_inj + PERIOD_MIN) + 1
-
-    def inject_and(n):              # injection issues in cycle t; state lasts n cycles
-        nonlocal t, last_inj
-        last_inj = t
-        t += n
-
-    t += 1 + ext_load_cycles(param_words)                     # S_INIT, params
-    loads = 1 if cached else G
-    for lg in range(loads):
-        t += ext_load_cycles(weight_words if cached else K)   # S_WLOAD_REQ / S_WLOAD
-        for tile in range(tiles):
-            t += TILE_SETUP
-            groups = G if cached else 1
-            for gi in range(groups):
-                if gi == 0 or dw:
-                    t += gather                               # S_GATHER + S_GATHER_TAIL
-                wait()
-                inject_and(K)                                 # S_STREAM
-                t += 1                                        # S_NEXT
-                if cached and not dw and gi < groups - 1:
-                    continue                                  # next job captures implicitly
-                wait()
-                inject_and(1)                                 # S_CAPTURE
-                t += 1                                        # S_AFTER_CAP
-    # S_FINISH: until the last capture's drain and requant pipeline are empty
-    t = max(t, last_inj + DRAIN_DONE) + 1
+    for u, (_, _, new_tile, wload) in enumerate(units):
+        # ---- producer gathers unit u into half u % 2
+        w = max(p_t, release[u - 2] if u >= 2 else 0)        # P_WAIT_BUF passes
+        e = w + (TILE_SETUP if new_tile else 0) + gather_issue + gather_tail   # last P_TAIL cycle
+        ready[u] = e + 1
+        p_t = e + 1
+        # ---- consumer streams unit u
+        s = max(c_t, ready[u]) + 1                            # C_WAIT_FULL passes
+        if wload:
+            s += ext_load_cycles(K)                           # C_WLOAD_REQ / C_WLOAD
+        for _ in range(jobs_per_unit):
+            inj = max(s, last_inj + PERIOD_MIN) + 1           # C_INJ_WAIT passes; C_STREAM
+            last_inj = inj
+            s = inj + K + 1                                   # stream K, C_NEXT
+        release[u] = s                                        # released in the last C_NEXT
+        c_t = s
+    cap = max(c_t, last_inj + PERIOD_MIN) + 1                 # C_CAP_WAIT; C_CAPTURE
+    t = cap + 2                                               # C_DONE seen; S_FINISH
+    t = max(t, cap + DRAIN_DONE) + 1
     return t + INSTR_OVERHEAD - 1
 
 
@@ -215,12 +223,12 @@ class NpuSim:
 
         tiles = -(-P // N)
         if ins.in_src:   # packed: one byte per cycle
-            gather = N * K + GATHER_TAIL_PACKED
+            issue, tail = N * K, GATHER_TAIL_PACKED
         else:            # one word per cycle through the transposer
-            gather = N * (K // N) + GATHER_TAIL_WORD
+            issue, tail = N * (K // N), GATHER_TAIL_WORD
         self.stats.cycles.append(tile_engine_cycles(
-            K=K, G=G, tiles=tiles, gather=gather, dw=False, cached=G * K <= isa.WBUF_DEPTH,
-            param_words=G * N * isa.PARAM_WORDS, weight_words=G * K))
+            K=K, G=G, tiles=tiles, gather_issue=issue, gather_tail=tail, dw=False,
+            cached=G * K <= isa.WBUF_DEPTH, param_words=G * N * isa.PARAM_WORDS, weight_words=G * K))
         self.stats.macs.append(P * real_k * G * N)
 
     def _dwconv(self, ins: Instr):
@@ -236,7 +244,8 @@ class NpuSim:
         tiles = -(-P // N)
         assert cb * T <= isa.WBUF_DEPTH
         self.stats.cycles.append(tile_engine_cycles(
-            K=T * N, G=cb, tiles=tiles, gather=N * T + GATHER_TAIL_WORD, dw=True, cached=True,
+            K=T * N, G=cb, tiles=tiles, gather_issue=N * T, gather_tail=GATHER_TAIL_WORD,
+            dw=True, cached=True,
             param_words=cb * N * isa.PARAM_WORDS, weight_words=cb * T))
         self.stats.macs.append(P * T * cb * N)
 

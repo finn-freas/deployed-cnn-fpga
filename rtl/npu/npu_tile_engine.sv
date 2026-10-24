@@ -6,22 +6,25 @@
 //   * weights are burst-read into an on-chip weight buffer: the whole layer if it fits
 //     ("cached" mode, tile-outer loop), otherwise one output group at a time ("group"
 //     mode, group-outer loop, inputs re-gathered per group);
-//   * im2col rows for a tile of N output pixels are gathered into one transposed buffer
+//   * im2col rows for a tile of N output pixels are gathered into a transposed buffer
 //     A_T, where word k holds byte k of all N rows, so streaming reads one word per k.
 //     Word-mode gathers (channel-blocked input) pass through a double-buffered N x N
 //     byte transposer at one word per cycle; packed-mode gathers (uint8 HWC input in
 //     activation memory) assemble each A_T word from N bytes, one per cycle.
 //
-// Compute (O3, overlapped drain): a "job" is one output group of one tile, streamed as
-// K values with the first one flagged. The flagged value moves every PE's finished sum
-// into its shadow register as it passes, so jobs stream back to back while a separate
-// drain unit reads the previous job's shadows through requant into activation memory.
-// When the next thing to do is a gather (new tile, or a depthwise channel block), a
-// one-cycle zero-valued capture wave is injected instead, so the drain overlaps the
-// gather. Injections are spaced at least PERIOD_MIN cycles apart so a shadow is never
-// overwritten before the drain has read it. DWCONV runs as a CONV over one channel
-// block with block-diagonal weights expanded on the fly from the compact depthwise
-// weights, re-gathering per channel block.
+// Compute:
+//   * O3, overlapped drain: a "job" is one output group of one tile, streamed as K values
+//     with the first one flagged. The flagged value moves every PE's finished sum into its
+//     shadow register as it passes, so jobs stream back to back while a separate drain
+//     unit reads the previous job's shadows through requant into activation memory.
+//     Injections are spaced at least PERIOD_MIN cycles apart so a shadow is never
+//     overwritten before the drain has read it.
+//   * Double-buffered A_T: a producer FSM gathers the next "unit" (a tile; for DWCONV a
+//     tile's channel block) into one half while a consumer FSM streams the jobs of the
+//     other half. The next job's first value captures the previous one; a zero-valued
+//     capture wave is only injected after the instruction's last job.
+// DWCONV runs as a CONV over one channel block with block-diagonal weights expanded on
+// the fly from the compact depthwise weights.
 
 `default_nettype none
 
@@ -48,7 +51,7 @@ module npu_tile_engine
     input  wire logic [WORD_W-1:0]   ext_rdata
 );
 
-    localparam int KA_AW       = $clog2(K_MAX);      // A_T address
+    localparam int KA_AW       = $clog2(K_MAX);      // address within one A_T half
     localparam int RQ_LAT      = 4;                  // npu_requant latency
     // Timing (injection issued in cycle i reaches PE(r,c) in cycle i+1+r+c):
     //   the drain's first read is in cycle i+DRAIN_DELAY+1 and it reads PE(r,c) N*r+c cycles
@@ -61,10 +64,9 @@ module npu_tile_engine
     localparam int PERIOD_MIN  = DRAIN_DELAY + N * N + 1;
     localparam int DQ          = RQ_LAT + 1;         // drain issue -> requant output
 
-    typedef enum logic [4:0] {
-        S_IDLE, S_INIT, S_PLOAD_REQ, S_PLOAD, S_WLOAD_REQ, S_WLOAD, S_TILE_SETUP,
-        S_GATHER, S_GATHER_TAIL, S_INJ_WAIT, S_STREAM, S_NEXT, S_CAP_WAIT, S_CAPTURE,
-        S_AFTER_CAP, S_FINISH, S_DONE
+    // ---------------------------------------------------------------- main FSM
+    typedef enum logic [3:0] {
+        S_IDLE, S_INIT, S_PLOAD_REQ, S_PLOAD, S_WLOAD_REQ, S_WLOAD, S_RUN, S_FINISH, S_DONE
     } state_e;
     state_e state;
 
@@ -77,18 +79,12 @@ module npu_tile_engine
     logic [7:0]  KW;                // A words per pixel in word mode (K / N)
     logic [13:0] P;                 // output pixels
     logic [16:0] layer_words;       // weight words of the whole layer
-
-    // tile / group
-    logic [13:0] tile_p0;
-    logic [6:0]  tile_oy, tile_ox, next_oy, next_ox;
-    logic [5:0]  g;
-    logic        last_tile, last_group;
-    assign last_tile  = (tile_p0 + 14'(N)) >= P;
-    assign last_group = (g == I.out_g - 6'd1);
+    logic        run_start;         // pulse: producer and consumer begin
 
     // ---------------------------------------------------------------- external loads
     logic [16:0] ld_cnt, ld_len;
     logic [WORD_W-1:0] p_word0;
+    logic        w_loading;         // a weight burst is landing in the weight buffer
 
     // ---------------------------------------------------------------- buffers
     logic                 wb_we;
@@ -104,17 +100,15 @@ module npu_tile_engine
         .clk, .we(pb_we), .waddr(pb_waddr), .wdata(pb_wdata), .raddr(pb_raddr), .rdata(pb_rdata));
 
     logic                 at_we;
-    logic [KA_AW-1:0]     at_waddr, at_raddr;
+    logic [KA_AW:0]       at_waddr, at_raddr;     // {half, k}
     logic [WORD_W-1:0]    at_wdata, at_rdata;
-    sdpram #(.W(WORD_W), .D(K_MAX)) u_at (
+    sdpram #(.W(WORD_W), .D(2 * K_MAX)) u_at (
         .clk, .we(at_we), .waddr(at_waddr), .wdata(at_wdata), .raddr(at_raddr), .rdata(at_rdata));
 
-    // ---------------------------------------------------------------- per-row pixel coords
-    logic [6:0]  row_py [N];
-    logic [6:0]  row_px [N];
-    logic [N-1:0] row_valid;
-    logic [6:0]  cy, cx;            // coordinate walker (tile setup)
-    logic [3:0]  sr;                // setup row counter
+    logic [1:0]  full;              // A_T half holds a gathered unit
+    logic [13:0] unit_p0 [2];       // per half: first output pixel of the unit's tile
+    logic [5:0]  unit_g  [2];       // per half: channel block (DWCONV) / group (group mode)
+    logic        unit_last [2];     // per half: last unit of the instruction
 
     function automatic logic [6:0] step_y(input logic [6:0] y, input logic [6:0] x, input logic [6:0] w);
         return (x == w - 7'd1) ? y + 7'd1 : y;
@@ -123,7 +117,24 @@ module npu_tile_engine
         return (x == w - 7'd1) ? 7'd0 : x + 7'd1;
     endfunction
 
-    // ---------------------------------------------------------------- gather
+    // ---------------------------------------------------------------- producer (gather)
+    typedef enum logic [2:0] {P_IDLE, P_WAIT_BUF, P_SETUP, P_GATHER, P_TAIL} pstate_e;
+    pstate_e pstate;
+    logic        gbuf;              // A_T half being filled
+    logic [13:0] p_p0;              // unit's tile: first output pixel
+    logic [6:0]  p_oy, p_ox;        // unit's tile: first pixel coords
+    logic [6:0]  p_noy, p_nox;      // next tile's first pixel coords
+    logic [5:0]  p_g;               // unit's channel block / group
+    logic        p_last_tile, p_last_g, p_new_tile;
+    assign p_last_tile = (p_p0 + 14'(N)) >= P;
+    assign p_last_g    = (p_g == I.out_g - 6'd1);
+
+    logic [6:0]  row_py [N];
+    logic [6:0]  row_px [N];
+    logic [N-1:0] row_valid;
+    logic [6:0]  cy, cx;            // coordinate walker (tile setup)
+    logic [3:0]  sr;                // setup row counter
+
     logic [2:0]  gr;                // row being read
     logic [10:0] gk;                // k-word (word mode) or byte k (packed mode)
     logic [3:0]  ky;                // one bit wider than ksize: packed mode counts past the kernel
@@ -142,7 +153,7 @@ module npu_tile_engine
         pix_lin   = 24'(unsigned'(iy)) * 24'(I.in_w) + 24'(unsigned'(ix));
         byte_addr = 27'({I.in_base, 3'b000}) + 27'(pix_lin * 24'(I.in_cb)) + 27'(kc);
         if (pk_mode) act_raddr = ACT_AW'(byte_addr >> 3);
-        else         act_raddr = ACT_AW'(24'(I.in_base) + pix_lin * 24'(I.in_cb) + 24'(is_dw ? g : kc));
+        else         act_raddr = ACT_AW'(24'(I.in_base) + pix_lin * 24'(I.in_cb) + 24'(is_dw ? p_g : kc));
     end
 
     // read-data pipeline (act memory has 1-cycle latency)
@@ -174,17 +185,34 @@ module npu_tile_engine
                 b = !d_real ? 8'd0 : (d_pad ? I.in_zp : 8'(act_rdata >> (8 * d_lane)) + I.in_zp);
                 w[8 * d_r +: 8] = b;
                 at_we    = (d_r == 3'(N - 1));
-                at_waddr = d_k;
+                at_waddr = {gbuf, d_k};
                 at_wdata = w;
             end
         end else if (wo_active) begin
             at_we    = 1'b1;
-            at_waddr = KA_AW'({wo_kw, wo_cnt});
+            at_waddr = {gbuf, KA_AW'({wo_kw, wo_cnt})};
             for (int r = 0; r < N; r++) at_wdata[8 * r +: 8] = 8'(tb[wo_buf][r] >> (8 * wo_cnt));
         end
     end
 
-    // ---------------------------------------------------------------- injection / array
+    logic gather_last;
+    assign gather_last = (gr == 3'(N - 1)) && (gk == (pk_mode ? K - 11'd1 : 11'(KW) - 11'd1));
+    always_comb KW = 8'(K >> 3);
+
+    // ---------------------------------------------------------------- consumer (stream)
+    typedef enum logic [3:0] {
+        C_IDLE, C_WAIT_FULL, C_WLOAD_REQ, C_WLOAD, C_INJ_WAIT, C_STREAM, C_NEXT, C_CAP_WAIT,
+        C_CAPTURE, C_DONE
+    } cstate_e;
+    cstate_e cstate;
+    logic        sbuf;              // A_T half being streamed
+    logic [13:0] c_p0;              // current unit's tile
+    logic [5:0]  c_g;               // current job's output group
+    logic        c_last_unit;
+    logic [5:0]  loaded_g;          // group whose weights are in the buffer (group mode)
+    logic        c_last_job;
+    assign c_last_job = !(cached && !is_dw) || (c_g == I.out_g - 6'd1);
+
     logic [10:0] sk;
     logic        st_valid, st_first, st_zero;   // registered: aligned with buffer read data
     logic [2:0]  st_sel;
@@ -207,18 +235,14 @@ module npu_tile_engine
                        .shadow(arr_shadow));
 
     // ---------------------------------------------------------------- drain (concurrent)
-    // pending: the job streamed last, whose result the next injection captures
-    logic        pend_valid;
+    logic        pend_valid;        // the job streamed last, captured by the next injection
     logic [13:0] pend_p0;
     logic [5:0]  pend_g;
-    // the job being drained
-    logic        dr_busy;
+    logic        dr_busy, dr_run;
     logic [1:0]  dr_wait;
-    logic        dr_run;
     logic [6:0]  dr_idx;
     logic [13:0] dr_p0;
     logic [5:0]  dr_g;
-    // issue stage -> requant pipeline tags
     logic signed [ACC_W-1:0] dr_sh;                 // selected shadow, registered
     logic [DQ-1:0]           tq_v;
     logic [2:0]              tq_c   [DQ];
@@ -241,34 +265,28 @@ module npu_tile_engine
     // ---------------------------------------------------------------- buffer addressing
     always_comb begin
         if (!cached)    wb_raddr = WBUF_AW'(sk);                                  // group mode (CONV)
-        else if (is_dw) wb_raddr = WBUF_AW'(24'(g) * 24'(taps) + 24'(sk >> 3));
-        else            wb_raddr = WBUF_AW'(24'(g) * 24'(K) + 24'(sk));
-        at_raddr = KA_AW'(sk);
+        else if (is_dw) wb_raddr = WBUF_AW'(24'(c_g) * 24'(taps) + 24'(sk >> 3));
+        else            wb_raddr = WBUF_AW'(24'(c_g) * 24'(K) + 24'(sk));
+        at_raddr = {sbuf, KA_AW'(sk)};
         pb_raddr = PBUF_AW'(16'(dr_g) * 16'(N) + 16'(dr_idx[2:0]));               // drain
         // external loads land in the buffers
-        wb_we    = ext_rvalid && (state == S_WLOAD);
+        wb_we    = ext_rvalid && w_loading;
         wb_waddr = WBUF_AW'(ld_cnt);
         pb_we    = ext_rvalid && (state == S_PLOAD) && ld_cnt[0];
         pb_waddr = PBUF_AW'(ld_cnt >> 1);
         pb_wdata = {SHIFT_W'(ext_rdata), p_word0[63:32], p_word0[31:0]};
     end
+    assign w_loading = (state == S_WLOAD) || (cstate == C_WLOAD);
+    assign inj_now   = (cstate == C_STREAM && sk == '0) || cstate == C_CAPTURE;
 
-    // ---------------------------------------------------------------- control
-    logic gather_last;
-    assign gather_last = (gr == 3'(N - 1)) && (gk == (pk_mode ? K - 11'd1 : 11'(KW) - 11'd1));
-    always_comb KW = 8'(K >> 3);
-    assign inj_now = (state == S_STREAM && sk == '0) || state == S_CAPTURE;
-
-    // what follows a capture wave
-    typedef enum logic [1:0] {A_GATHER_SAME_TILE, A_NEXT_TILE, A_NEXT_GROUP_LOAD, A_FINISH} after_e;
-    after_e after_cap;
-
+    // ---------------------------------------------------------------- sequential logic
     always_ff @(posedge clk) begin
-        done     <= 1'b0;
-        d_v      <= 1'b0;
-        st_valid <= 1'b0;
-        st_first <= 1'b0;
-        st_zero  <= 1'b0;
+        done      <= 1'b0;
+        run_start <= 1'b0;
+        d_v       <= 1'b0;
+        st_valid  <= 1'b0;
+        st_first  <= 1'b0;
+        st_zero   <= 1'b0;
         if (since_inj != 8'hFF) since_inj <= since_inj + 8'd1;
 
         // ---- gather data landing
@@ -307,9 +325,9 @@ module npu_tile_engine
                 dr_p0   <= pend_p0;
                 dr_g    <= pend_g;
             end
-            pend_valid <= (state == S_STREAM);
-            pend_p0    <= tile_p0;
-            pend_g     <= g;
+            pend_valid <= (cstate == C_STREAM);
+            pend_p0    <= c_p0;
+            pend_g     <= c_g;
         end
 
         // ---- drain: wait DRAIN_DELAY, then issue N*N shadow reads (row-major)
@@ -346,6 +364,8 @@ module npu_tile_engine
 
         if (rst) begin
             state      <= S_IDLE;
+            pstate     <= P_IDLE;
+            cstate     <= C_IDLE;
             wo_active  <= 1'b0;
             ext_req    <= 1'b0;
             dr_busy    <= 1'b0;
@@ -353,7 +373,9 @@ module npu_tile_engine
             pend_valid <= 1'b0;
             tq_v       <= '0;
             since_inj  <= 8'hFF;
+            full       <= '0;
         end else begin
+            // ======================================================== main
             unique case (state)
                 S_IDLE: if (start) begin
                     I <= ins;
@@ -377,15 +399,11 @@ module npu_tile_engine
                         layer_words <= 17'(I.out_g) * 17'(I.ksize) * 17'(I.ksize) * 17'(I.in_cb) * 17'(N);
                     end
                     P          <= 14'(I.out_h) * 14'(I.out_w);
-                    tile_p0    <= '0;
-                    tile_oy    <= '0;
-                    tile_ox    <= '0;
-                    g          <= '0;
                     pend_valid <= 1'b0;
+                    full       <= '0;
                     state      <= S_PLOAD_REQ;
                 end
 
-                // ---------------- load the layer's params
                 S_PLOAD_REQ: begin
                     cached   <= (layer_words <= 17'(WBUF_DEPTH));
                     ext_req  <= 1'b1;
@@ -399,14 +417,20 @@ module npu_tile_engine
                     end
                 end
 
-                S_PLOAD: if (ld_cnt == ld_len) state <= S_WLOAD_REQ;
+                S_PLOAD: if (ld_cnt == ld_len) begin
+                    if (cached) begin
+                        state <= S_WLOAD_REQ;
+                    end else begin
+                        run_start <= 1'b1;      // group mode: the consumer loads weights per group
+                        state     <= S_RUN;
+                    end
+                end
 
-                // ---------------- load weights: whole layer (cached) or group g
                 S_WLOAD_REQ: begin
                     ext_req  <= 1'b1;
-                    ext_addr <= cached ? EXT_AW'(I.w_base) : EXT_AW'(24'(I.w_base) + 24'(g) * 24'(K));
-                    ext_len  <= cached ? 16'(layer_words) : 16'(K);
-                    ld_len   <= cached ? layer_words : 17'(K);
+                    ext_addr <= EXT_AW'(I.w_base);
+                    ext_len  <= 16'(layer_words);
+                    ld_len   <= layer_words;
                     ld_cnt   <= '0;
                     if (ext_req && ext_ack) begin
                         ext_req <= 1'b0;
@@ -415,30 +439,62 @@ module npu_tile_engine
                 end
 
                 S_WLOAD: if (ld_cnt == ld_len) begin
-                    state <= S_TILE_SETUP;
-                    sr    <= '0;
-                    cy    <= tile_oy;
-                    cx    <= tile_ox;
+                    run_start <= 1'b1;
+                    state     <= S_RUN;
                 end
 
-                // ---------------- per-tile row coordinates
-                S_TILE_SETUP: begin
+                S_RUN: if (cstate == C_DONE) state <= S_FINISH;
+
+                S_FINISH: if (!dr_busy && !(|tq_v)) state <= S_DONE;
+
+                S_DONE: begin
+                    done  <= 1'b1;
+                    state <= S_IDLE;
+                end
+
+                default: state <= S_IDLE;
+            endcase
+
+            // ======================================================== producer
+            unique case (pstate)
+                P_IDLE: if (run_start) begin
+                    gbuf   <= 1'b0;
+                    p_p0   <= '0;
+                    p_oy   <= '0;
+                    p_ox   <= '0;
+                    p_g    <= '0;
+                    p_new_tile <= 1'b1;
+                    pstate <= P_WAIT_BUF;
+                end
+
+                P_WAIT_BUF: if (!full[gbuf]) begin
+                    if (p_new_tile) begin
+                        pstate <= P_SETUP;
+                        sr <= '0;
+                        cy <= p_oy;
+                        cx <= p_ox;
+                    end else begin
+                        pstate <= P_GATHER;
+                        gr <= '0; gk <= '0; ky <= '0; kx <= '0; kc <= '0;
+                    end
+                end
+
+                P_SETUP: begin
                     row_py[sr[2:0]]    <= cy;
                     row_px[sr[2:0]]    <= cx;
-                    row_valid[sr[2:0]] <= (tile_p0 + 14'(sr)) < P;
+                    row_valid[sr[2:0]] <= (p_p0 + 14'(sr)) < P;
                     cy <= step_y(cy, cx, I.out_w);
                     cx <= step_x(cx, I.out_w);
                     if (sr == 4'(N - 1)) begin
-                        next_oy <= step_y(cy, cx, I.out_w);
-                        next_ox <= step_x(cx, I.out_w);
-                        state <= S_GATHER;
+                        p_noy  <= step_y(cy, cx, I.out_w);
+                        p_nox  <= step_x(cx, I.out_w);
+                        pstate <= P_GATHER;
                         gr <= '0; gk <= '0; ky <= '0; kx <= '0; kc <= '0;
                     end
                     sr <= sr + 4'd1;
                 end
 
-                // ---------------- gather: one read per cycle, rows innermost
-                S_GATHER: begin
+                P_GATHER: begin
                     d_v    <= 1'b1;
                     d_r    <= gr;
                     d_k    <= KA_AW'(gk);
@@ -446,13 +502,12 @@ module npu_tile_engine
                     d_real <= real_tap;
                     d_lane <= byte_addr[2:0];
                     if (gather_last) begin
-                        state <= S_GATHER_TAIL;
+                        pstate <= P_TAIL;
                     end else if (gr != 3'(N - 1)) begin
                         gr <= gr + 3'd1;
                     end else begin
                         gr <= '0;
                         gk <= gk + 11'd1;
-                        // next tap: innermost channel (block), then kx, then ky
                         if (is_dw || kc == I.in_cb - 6'd1) begin
                             kc <= '0;
                             if (kx == I.ksize - 3'd1) begin
@@ -467,82 +522,125 @@ module npu_tile_engine
                     end
                 end
 
-                S_GATHER_TAIL: if (!d_v && !wo_active) state <= S_INJ_WAIT;
-
-                // ---------------- stream one job; its first value is an injection
-                S_INJ_WAIT: if (since_inj >= 8'(PERIOD_MIN - 1)) begin
-                    sk    <= '0;
-                    state <= S_STREAM;
-                end
-
-                S_STREAM: begin
-                    st_valid <= 1'b1;
-                    st_first <= (sk == '0);
-                    st_sel   <= sk[2:0];
-                    if (sk == K - 11'd1) state <= S_NEXT;
-                    else                 sk <= sk + 11'd1;
-                end
-
-                S_NEXT: begin
-                    if (cached && !is_dw && !last_group) begin
-                        // next group of the same tile reuses A: its first value captures this job
-                        g     <= g + 6'd1;
-                        state <= S_INJ_WAIT;
+                // last data landed and the transposer has written it: publish the unit
+                P_TAIL: if (!d_v && !wo_active) begin
+                    logic last_unit;
+                    full[gbuf]      <= 1'b1;
+                    unit_p0[gbuf]   <= p_p0;
+                    unit_g[gbuf]    <= p_g;
+                    gbuf            <= !gbuf;
+                    // advance: DWCONV channel blocks inside a tile; group mode tiles inside
+                    // a group; cached CONV tiles only
+                    if (is_dw) begin
+                        last_unit = p_last_g && p_last_tile;
+                        if (!p_last_g) begin
+                            p_g <= p_g + 6'd1;
+                            p_new_tile <= 1'b0;
+                        end else begin
+                            p_g <= '0;
+                            p_p0 <= p_p0 + 14'(N);
+                            p_oy <= p_noy;
+                            p_ox <= p_nox;
+                            p_new_tile <= 1'b1;
+                        end
+                    end else if (!cached) begin
+                        last_unit = p_last_g && p_last_tile;
+                        p_new_tile <= 1'b1;
+                        if (!p_last_tile) begin
+                            p_p0 <= p_p0 + 14'(N);
+                            p_oy <= p_noy;
+                            p_ox <= p_nox;
+                        end else begin
+                            p_g  <= p_g + 6'd1;
+                            p_p0 <= '0;
+                            p_oy <= '0;
+                            p_ox <= '0;
+                        end
                     end else begin
-                        state <= S_CAP_WAIT;
-                        if (is_dw && !last_group)  after_cap <= A_GATHER_SAME_TILE;
-                        else if (!last_tile)       after_cap <= A_NEXT_TILE;
-                        else if (!cached && !last_group) after_cap <= A_NEXT_GROUP_LOAD;
-                        else                       after_cap <= A_FINISH;
+                        last_unit = p_last_tile;
+                        p_p0 <= p_p0 + 14'(N);
+                        p_oy <= p_noy;
+                        p_ox <= p_nox;
+                        p_new_tile <= 1'b1;
+                    end
+                    unit_last[gbuf] <= last_unit;
+                    pstate <= last_unit ? P_IDLE : P_WAIT_BUF;
+                end
+
+                default: pstate <= P_IDLE;
+            endcase
+
+            // ======================================================== consumer
+            unique case (cstate)
+                C_IDLE: if (run_start) begin
+                    sbuf     <= 1'b0;
+                    loaded_g <= 6'h3F;
+                    cstate   <= C_WAIT_FULL;
+                end
+
+                C_WAIT_FULL: if (full[sbuf]) begin
+                    c_p0        <= unit_p0[sbuf];
+                    c_g         <= (cached && !is_dw) ? 6'd0 : unit_g[sbuf];
+                    c_last_unit <= unit_last[sbuf];
+                    if (!cached && unit_g[sbuf] != loaded_g) cstate <= C_WLOAD_REQ;
+                    else                                     cstate <= C_INJ_WAIT;
+                end
+
+                // group mode: load this group's weights (the previous job has finished streaming)
+                C_WLOAD_REQ: begin
+                    ext_req  <= 1'b1;
+                    ext_addr <= EXT_AW'(24'(I.w_base) + 24'(c_g) * 24'(K));
+                    ext_len  <= 16'(K);
+                    ld_len   <= 17'(K);
+                    ld_cnt   <= '0;
+                    if (ext_req && ext_ack) begin
+                        ext_req <= 1'b0;
+                        cstate  <= C_WLOAD;
                     end
                 end
 
-                // ---------------- zero-valued capture wave, so the drain overlaps what follows
-                S_CAP_WAIT: if (since_inj >= 8'(PERIOD_MIN - 1)) state <= S_CAPTURE;
+                C_WLOAD: if (ld_cnt == ld_len) begin
+                    loaded_g <= c_g;
+                    cstate   <= C_INJ_WAIT;
+                end
 
-                S_CAPTURE: begin
+                C_INJ_WAIT: if (since_inj >= 8'(PERIOD_MIN - 1)) begin
+                    sk     <= '0;
+                    cstate <= C_STREAM;
+                end
+
+                C_STREAM: begin
+                    st_valid <= 1'b1;
+                    st_first <= (sk == '0);
+                    st_sel   <= sk[2:0];
+                    if (sk == K - 11'd1) cstate <= C_NEXT;
+                    else                 sk <= sk + 11'd1;
+                end
+
+                C_NEXT: begin
+                    if (!c_last_job) begin
+                        c_g    <= c_g + 6'd1;            // next group of the same tile
+                        cstate <= C_INJ_WAIT;
+                    end else begin
+                        full[sbuf] <= 1'b0;              // A_T half free for the producer
+                        sbuf       <= !sbuf;
+                        cstate     <= c_last_unit ? C_CAP_WAIT : C_WAIT_FULL;
+                    end
+                end
+
+                // after the instruction's last job: zero-valued capture wave
+                C_CAP_WAIT: if (since_inj >= 8'(PERIOD_MIN - 1)) cstate <= C_CAPTURE;
+
+                C_CAPTURE: begin
                     st_valid <= 1'b1;
                     st_first <= 1'b1;
                     st_zero  <= 1'b1;
-                    state    <= S_AFTER_CAP;
+                    cstate   <= C_DONE;
                 end
 
-                S_AFTER_CAP: begin
-                    unique case (after_cap)
-                        A_GATHER_SAME_TILE: begin
-                            g     <= g + 6'd1;
-                            state <= S_GATHER;
-                            gr <= '0; gk <= '0; ky <= '0; kx <= '0; kc <= '0;
-                        end
-                        A_NEXT_TILE: begin
-                            tile_p0 <= tile_p0 + 14'(N);
-                            tile_oy <= next_oy;
-                            tile_ox <= next_ox;
-                            if (cached) g <= '0;
-                            state <= S_TILE_SETUP;
-                            sr    <= '0;
-                            cy    <= next_oy;
-                            cx    <= next_ox;
-                        end
-                        A_NEXT_GROUP_LOAD: begin
-                            g       <= g + 6'd1;
-                            tile_p0 <= '0;
-                            tile_oy <= '0;
-                            tile_ox <= '0;
-                            state   <= S_WLOAD_REQ;
-                        end
-                        default: state <= S_FINISH;
-                    endcase
-                end
+                C_DONE: if (state == S_FINISH) cstate <= C_IDLE;
 
-                S_FINISH: if (!dr_busy && !(|tq_v)) state <= S_DONE;
-
-                S_DONE: begin
-                    done  <= 1'b1;
-                    state <= S_IDLE;
-                end
-
-                default: state <= S_IDLE;
+                default: cstate <= C_IDLE;
             endcase
         end
     end
