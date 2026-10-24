@@ -4,8 +4,10 @@ rtl/npu/npu_pkg.sv is generated from this file (sw/npu/gen_pkg.py); a test check
 the two stay in sync. See docs/isa.md for the semantics of each instruction.
 
 ISA v2: adds DWCONV and AVGPOOL, lets the first CONV read the packed (byte-per-
-channel) input buffer directly (in_src=1), and widens fields for MobileNet-sized
-models. LOAD_INPUT from v1 is gone.
+channel) input directly (in_src=1), and widens fields for MobileNet-sized models.
+ISA v3 (memory system): the packed input lives in activation memory (no separate
+input buffer), and weights *and* params live in one external store (flash/SDRAM)
+addressed by w_base / p_base; the core streams them into small on-chip buffers.
 """
 
 from dataclasses import dataclass, field, fields
@@ -15,13 +17,14 @@ from enum import IntEnum
 N = 8                 # systolic array is N x N; also channels per activation/weight word
 DATA_W = 8            # int8 operands
 ACC_W = 32            # int32 accumulators
-ACT_DEPTH = 8192      # activation memory address space, 64-bit words
-W_DEPTH = 65536       # weight store address space (streamed from flash/SDRAM), 64-bit words
-P_DEPTH = 4096        # param store address space, one entry per output channel (streamed with
-                      # the weights; on chip only the current layer's params are buffered)
+ACT_DEPTH = 7168      # activation memory, 64-bit words (packed input lives here too); 7 x 1K
+                      # so it maps onto 28 BSRAMs. VWW's peak is 6912 words.
+EXT_DEPTH = 65536     # external store (flash/SDRAM): weights + params, 64-bit words
+WBUF_DEPTH = 1024     # on-chip weight buffer, 64-bit words (whole layer, or one output group)
+PBUF_DEPTH = 256      # on-chip param buffer: one layer's output channels
+PARAM_WORDS = 2       # external words per param entry: {mult, bias}, {shift}
 IMEM_DEPTH = 64       # instruction memory, INSTR_W-bit words
-IN_DEPTH = 32768      # input buffer, bytes (packed HWC, uint8): 96*96*3 = 27648
-K_MAX = 1024          # max reduction length per CONV output (see Instr.K)
+K_MAX = 1024          # max reduction length per CONV output (A buffer depth; see Instr.K)
 INSTR_W = 160
 SHIFT_W = 6           # signed requant shift: >0 left, <=0 right
 
@@ -41,8 +44,8 @@ FIELDS = [
     ("op",       4, False),
     ("in_base", 16, False),
     ("out_base", 16, False),
-    ("w_base",  16, False),
-    ("p_base",  12, False),
+    ("w_base",  16, False),   # external store word address of the layer's weights
+    ("p_base",  16, False),   # external store word address of the layer's params
     ("in_h",     7, False),
     ("in_w",     7, False),
     ("in_cb",    6, False),   # channel blocks; for in_src=1 the channel count C
@@ -57,7 +60,8 @@ FIELDS = [
     ("act_min",  8, True),
     ("act_max",  8, True),
     ("rmode",    1, False),   # requant rounding: 0 = double, 1 = single; see quant.py
-    ("in_src",   1, False),   # CONV input: 0 = activation memory, 1 = packed input buffer
+    ("in_src",   1, False),   # CONV input: 0 = channel-blocked, 1 = packed uint8 HWC bytes
+                              # starting at byte in_base*8 of activation memory
 ]
 assert sum(w for _, w, _ in FIELDS) <= INSTR_W
 
@@ -125,8 +129,9 @@ class Instr:
         return f"{self.op.name:8s} " + " ".join(parts) + (f"   # {self.comment}" if self.comment else "")
 
 
-# ---------------------------------------------------------------- param memory word
-# {shift[5:0] (signed), mult[31:0] (signed), bias[31:0] (signed)} = 70 bits
+# ---------------------------------------------------------------- params
+# On chip (param buffer entry): {shift[5:0], mult[31:0], bias[31:0]} = 70 bits.
+# In the external store: PARAM_WORDS = 2 words per entry, word0 = {mult, bias}, word1 = shift.
 PARAM_W = SHIFT_W + 32 + 32
 
 
@@ -138,3 +143,8 @@ def decode_param(word: int) -> tuple[int, int, int]:
     def s(v, w):
         return v - (1 << w) if v >> (w - 1) else v
     return s(word & 0xFFFFFFFF, 32), s((word >> 32) & 0xFFFFFFFF, 32), s((word >> 64) & 0x3F, 6)
+
+
+def param_ext_words(bias: int, mult: int, shift: int) -> tuple[int, int]:
+    """The two external-store words (as uint64) for one param entry."""
+    return (((mult & 0xFFFFFFFF) << 32) | (bias & 0xFFFFFFFF), shift & 0xFFFFFFFFFFFFFFFF)

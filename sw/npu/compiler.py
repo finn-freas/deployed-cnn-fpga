@@ -29,44 +29,53 @@ def ceil_div(a, b):
 @dataclass
 class Program:
     instrs: list[Instr] = field(default_factory=list)
-    wmem: np.ndarray = field(default_factory=lambda: np.zeros((isa.W_DEPTH, N), np.int8))
-    pmem: list[tuple[int, int, int]] = field(default_factory=list)   # (bias, mult, shift)
-    w_used: int = 0
+    # External store image (flash/SDRAM): per layer, its weights then its params.
+    ext: np.ndarray = field(default_factory=lambda: np.zeros((isa.EXT_DEPTH, N), np.int8))
+    ext_used: int = 0
+    params: list[tuple[int, int, int]] = field(default_factory=list)   # (bias, mult, shift), for reports
     meta: dict = field(default_factory=dict)
+
+    def ext_words(self) -> list[int]:
+        """External store contents as uint64 words (byte 0 = LSB)."""
+        return np.frombuffer(self.ext[:self.ext_used].view(np.uint8).tobytes(), dtype="<u8").tolist()
 
     def write(self, out: Path):
         out.mkdir(parents=True, exist_ok=True)
         hexw = isa.INSTR_W // 4
         (out / "program.hex").write_text("".join(f"{i.encode():0{hexw}x}\n" for i in self.instrs))
-        words = self.wmem[:self.w_used].view(np.uint8)
-        (out / "weights.hex").write_text(
-            "".join("".join(f"{b:02x}" for b in row[::-1]) + "\n" for row in words))  # byte 0 = LSB
-        (out / "params.hex").write_text(
-            "".join(f"{isa.encode_param(*p):018x}\n" for p in self.pmem))
+        (out / "ext.hex").write_text("".join(f"{w:016x}\n" for w in self.ext_words()))
         (out / "meta.json").write_text(json.dumps(self.meta, indent=2))
         (out / "program.txt").write_text("".join(f"{n:2d}: {i}\n" for n, i in enumerate(self.instrs)))
 
-    def add_weights(self, rows: np.ndarray, what: str) -> int:
-        base = self.w_used
-        if base + rows.shape[0] > isa.W_DEPTH:
-            raise MemoryError(f"weight store overflow at {what}")
-        self.wmem[base:base + rows.shape[0]] = rows.astype(np.int8)
-        self.w_used += rows.shape[0]
+    def _append(self, rows: np.ndarray, what: str) -> int:
+        base = self.ext_used
+        if base + rows.shape[0] > isa.EXT_DEPTH:
+            raise MemoryError(f"external store overflow at {what}")
+        self.ext[base:base + rows.shape[0]] = rows
+        self.ext_used += rows.shape[0]
         return base
+
+    def add_weights(self, rows: np.ndarray, what: str) -> int:
+        if rows.shape[0] > isa.WBUF_DEPTH * 64:
+            raise MemoryError(f"{what}: weights too large")
+        return self._append(rows.astype(np.int8), what)
 
     def add_params(self, bias, w_sum, in_zp, scales, n_padded) -> int:
         """Per-channel params; input zero point folded into the bias (padding = in_zp)."""
-        base = len(self.pmem)
+        if n_padded > isa.PBUF_DEPTH:
+            raise MemoryError(f"{n_padded} output channels exceed the param buffer")
+        words = []
         for o in range(n_padded):
             if o < len(bias):
                 b = int(bias[o] - in_zp * w_sum[o])
                 assert INT32_MIN <= b <= INT32_MAX
-                self.pmem.append((b, *quantize_multiplier(scales[o])))
+                p = (b, *quantize_multiplier(scales[o]))
             else:
-                self.pmem.append((0, 0, 0))
-        if len(self.pmem) > isa.P_DEPTH:
-            raise MemoryError("param memory overflow")
-        return base
+                p = (0, 0, 0)
+            self.params.append(p)
+            words.extend(isa.param_ext_words(*p))
+        rows = np.frombuffer(np.array(words, dtype="<u8").tobytes(), dtype=np.int8).reshape(-1, N)
+        return self._append(rows, "params")
 
 
 class ActAllocator:
@@ -100,11 +109,15 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
     prog = Program()
     alloc = ActAllocator(isa.ACT_DEPTH)
     H, W, C = ir["input"]["shape"]
-    assert H * W * C <= isa.IN_DEPTH, "input does not fit the input buffer"
-    cur = {"src": "input", "base": 0, "h": H, "w": W, "c": C, "cb": None, "words": 0}
-    prog.meta = {"input": {"h": H, "w": W, "c": C}, "layers": [], "isa": {
-        "N": N, "ACT_DEPTH": isa.ACT_DEPTH, "W_DEPTH": isa.W_DEPTH, "P_DEPTH": isa.P_DEPTH,
-        "INSTR_W": isa.INSTR_W}, "softmax_dropped": bool(ir["output"].get("softmax_dropped"))}
+    # The packed uint8 input (HWC bytes) sits at the bottom of activation memory.
+    in_words = ceil_div(H * W * C, N)
+    if in_words > isa.ACT_DEPTH:
+        raise MemoryError("input does not fit activation memory")
+    cur = {"src": "input", "base": 0, "h": H, "w": W, "c": C, "cb": None, "words": in_words}
+    prog.meta = {"input": {"base": 0, "words": in_words, "h": H, "w": W, "c": C}, "layers": [],
+                 "isa": {"N": N, "ACT_DEPTH": isa.ACT_DEPTH, "EXT_DEPTH": isa.EXT_DEPTH,
+                         "INSTR_W": isa.INSTR_W},
+                 "softmax_dropped": bool(ir["output"].get("softmax_dropped"))}
 
     for L in ir["layers"]:
         ih, iw, ic = L["in_shape"]
@@ -180,7 +193,7 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
     prog.instrs.append(Instr(Op.ARGMAX, in_base=cur["base"], in_w=cur["c"], comment="class = argmax"))
     prog.instrs.append(Instr(Op.END))
     assert len(prog.instrs) <= isa.IMEM_DEPTH, "program too long"
-    prog.meta.update(w_used=prog.w_used, p_used=len(prog.pmem), n_instr=len(prog.instrs),
+    prog.meta.update(ext_used=prog.ext_used, n_params=len(prog.params), n_instr=len(prog.instrs),
                      classes=cur["c"])
     return prog
 
@@ -199,8 +212,8 @@ def main():
     prog = compile_ir(*load_ir(args.model_dir))
     prog.write(args.out)
     print((args.out / "program.txt").read_text(), end="")
-    print(f"weights {prog.w_used}/{isa.W_DEPTH} words ({prog.w_used * 8 / 1024:.1f} KiB), "
-          f"params {len(prog.pmem)}/{isa.P_DEPTH}, instrs {len(prog.instrs)}/{isa.IMEM_DEPTH} -> {args.out}")
+    print(f"external store {prog.ext_used}/{isa.EXT_DEPTH} words ({prog.ext_used * 8 / 1024:.1f} KiB: "
+          f"weights + {len(prog.params)} params), instrs {len(prog.instrs)}/{isa.IMEM_DEPTH} -> {args.out}")
 
 
 if __name__ == "__main__":

@@ -17,16 +17,27 @@ from . import isa
 from .isa import N, Instr, Op
 from .quant import requantize
 
-# ---- cycle model of the v1 RTL (state durations in npu_tile_engine / npu_pool / npu_core)
+# ---- cycle model of the RTL (state durations in npu_tile_engine / npu_pool / npu_core)
 INSTR_OVERHEAD = 5                 # unit start/init/done handshake as seen by instr_cycles
 SEQ_PER_INSTR = 2                  # sequencer fetch/next, counted in the run total only
-GATHER_TAIL = 1
+TILE_SETUP = N                     # per-row pixel coordinates
+GATHER_TAIL_WORD = 2 + N           # last word lands, transposer writes its N columns
+GATHER_TAIL_PACKED = 2             # last byte lands
 PARAMS = N + 1
 FLUSH = 3 * (N - 1) + 3 + 1        # FLUSH_N + 1
 DRAIN = N * N
 DRAIN_TAIL = 4 + 3                 # requant latency + 3
-GROUP_FIXED = PARAMS + 1 + FLUSH + DRAIN + DRAIN_TAIL + 1   # + K (stream) per group
+GROUP_FIXED = PARAMS + 1 + FLUSH + DRAIN + DRAIN_TAIL + 1   # + K (stream); last term = NEXT_GROUP
 NEXT_TILE = 1
+
+# External store (rtl/sim/ext_mem_model.sv defaults, as instantiated by npu_sim_top)
+EXT_LATENCY = 6
+EXT_CYCLES_PER_WORD = 2
+
+
+def ext_load_cycles(words: int) -> int:
+    """Request handshake + latency + burst, until the engine sees the last word."""
+    return EXT_LATENCY + 5 - EXT_CYCLES_PER_WORD + words * EXT_CYCLES_PER_WORD
 
 
 def total_cycles(stats: "Stats", n_instrs: int) -> int:
@@ -46,20 +57,18 @@ def _out_grid(ins: Instr):
 
 
 class NpuSim:
-    def __init__(self, instrs: list[Instr], wmem: np.ndarray, pmem: list[tuple[int, int, int]]):
+    def __init__(self, instrs: list[Instr], ext: np.ndarray, input_base: int = 0):
         self.imem = list(instrs)
-        self.wmem = np.asarray(wmem, np.int8).reshape(-1, N)
-        p = np.zeros((isa.P_DEPTH, 3), np.int64)
-        p[:len(pmem)] = pmem
-        self.p_bias, self.p_mult, self.p_shift = p[:, 0], p[:, 1], p[:, 2]
+        self.ext = np.asarray(ext, np.int8).reshape(-1, N)        # external store image
+        self.ext_u64 = self.ext.view("<u8").reshape(-1)
+        self.input_base = input_base
         self.act = np.zeros((isa.ACT_DEPTH, N), np.int8)
-        self.input_buffer = np.zeros(isa.IN_DEPTH, np.uint8)
         self.result = (0, 0)
         self.stats = Stats()
 
     @classmethod
     def from_program(cls, prog):
-        return cls(prog.instrs, prog.wmem, prog.pmem)
+        return cls(prog.instrs, prog.ext, prog.meta["input"]["base"])
 
     # ------------------------------------------------------------ helpers
     def read_tensor(self, base, h, w, cb, c):
@@ -67,9 +76,12 @@ class NpuSim:
         return words.reshape(h, w, cb * N)[:, :, :c]
 
     def load_input(self, image_u8: np.ndarray):
+        """Packed uint8 HWC bytes into activation memory at input_base (what the host does)."""
         flat = np.asarray(image_u8, np.uint8).reshape(-1)
-        self.input_buffer[:] = 0
-        self.input_buffer[:flat.size] = flat
+        words = -(-flat.size // N)
+        buf = np.zeros(words * N, np.uint8)
+        buf[:flat.size] = flat
+        self.act[self.input_base:self.input_base + words] = buf.view(np.int8).reshape(words, N)
 
     @staticmethod
     def _check(addr, depth, what):
@@ -101,13 +113,24 @@ class NpuSim:
         self._check(dst, isa.ACT_DEPTH, f"{ins.op.name} dst")
         self.act[dst] = y.reshape(P * G, N)
 
+    def _params(self, ins: Instr, n):
+        """(bias, mult, shift) for n channels from the external store (2 words per entry)."""
+        addr = ins.p_base + isa.PARAM_WORDS * np.arange(n)
+        self._check(addr + 1, isa.EXT_DEPTH, "param")
+        w0, w1 = self.ext_u64[addr], self.ext_u64[addr + 1]
+        bias = (w0 & 0xFFFFFFFF).astype(np.uint32).view(np.int32).astype(np.int64)
+        mult = (w0 >> 32).astype(np.uint32).view(np.int32).astype(np.int64)
+        shift = w1.view(np.int64)
+        return bias, mult, shift
+
     def _requant(self, ins: Instr, acc, G):
-        p_addr = ins.p_base + np.arange(G * N)
-        self._check(p_addr, isa.P_DEPTH, "param")
-        sh = (G, N)
-        return requantize(acc, self.p_bias[p_addr].reshape(sh), self.p_mult[p_addr].reshape(sh),
-                          self.p_shift[p_addr].reshape(sh), ins.out_zp, ins.act_min, ins.act_max,
-                          ins.rmode)
+        bias, mult, shift = (p.reshape(G, N) for p in self._params(ins, G * N))
+        return requantize(acc, bias, mult, shift, ins.out_zp, ins.act_min, ins.act_max, ins.rmode)
+
+    def _weights(self, ins: Instr, n):
+        addr = ins.w_base + np.arange(n)
+        self._check(addr, isa.EXT_DEPTH, "weight")
+        return self.ext[addr].astype(np.int64)
 
     # ------------------------------------------------------------ execution
     def run(self, image_u8: np.ndarray, max_instrs: int = 1000, trace=None):
@@ -130,14 +153,15 @@ class NpuSim:
     def _conv(self, ins: Instr):
         K, G = ins.K, ins.out_g
         if ins.in_src:
-            # Packed input buffer: k = (ky*ksize + kx)*C + c; uint8 -> int8 by adding in_zp
-            # (padding reads as u8 0, i.e. int8 in_zp).
+            # Packed input at byte in_base*8 of activation memory: k = (ky*ksize + kx)*C + c;
+            # uint8 -> int8 by adding in_zp (padding reads as u8 0, i.e. int8 in_zp).
             iy, ix, valid = self._window(ins)
             C = ins.in_cb
-            addr = ((iy * ins.in_w + ix) * C)[..., None] + np.arange(C)               # [P, k, k, C]
+            addr = ins.in_base * N + ((iy * ins.in_w + ix) * C)[..., None] + np.arange(C)   # bytes
             v = np.broadcast_to(valid[..., None], addr.shape)
-            self._check(addr[v], isa.IN_DEPTH, "CONV input buffer")
-            u8 = np.where(v, self.input_buffer[np.where(v, addr, 0)], 0).astype(np.int64)
+            self._check(addr[v] // N, isa.ACT_DEPTH, "CONV packed input")
+            act_bytes = self.act.view(np.uint8).reshape(-1)
+            u8 = np.where(v, act_bytes[np.where(v, addr, 0)], 0).astype(np.int64)
             A = np.zeros((u8.shape[0], K), np.int64)
             A[:, :u8[0].size] = (((u8 + ins.in_zp + 128) & 0xFF) - 128).reshape(u8.shape[0], -1)
             real_k = ins.ksize * ins.ksize * C
@@ -146,16 +170,25 @@ class NpuSim:
             A = words.reshape(words.shape[0], -1).astype(np.int64)                  # [P, K]
             real_k = K
         P = A.shape[0]
-        w_addr = ins.w_base + np.arange(G * K)
-        self._check(w_addr, isa.W_DEPTH, "weight")
-        Wm = self.wmem[w_addr].astype(np.int64).reshape(G, K, N)
+        Wm = self._weights(ins, G * K).reshape(G, K, N)
         acc = np.einsum("pk,gkc->pgc", A, Wm)                                         # [P, G, N]
         self._write_out(ins, self._requant(ins, acc, G))
 
         tiles = -(-P // N)
-        gather = N * K if ins.in_src else N * (K // N)     # packed: one byte/cycle; else one word/cycle
-        per_tile = gather + GATHER_TAIL + G * (GROUP_FIXED + K) + NEXT_TILE
-        self.stats.cycles.append(tiles * per_tile + INSTR_OVERHEAD)
+        if ins.in_src:   # packed: one byte per cycle
+            gather = N * K + GATHER_TAIL_PACKED
+        else:            # one word per cycle through the transposer
+            gather = N * (K // N) + GATHER_TAIL_WORD
+        params = ext_load_cycles(G * N * isa.PARAM_WORDS)
+        if G * K <= isa.WBUF_DEPTH:
+            # cached: whole layer's weights once; tile-outer, A reused across groups
+            per_tile = TILE_SETUP + gather + G * (GROUP_FIXED + K) + NEXT_TILE
+            cycles = params + ext_load_cycles(G * K) + tiles * per_tile
+        else:
+            # group mode: per group, load its weights and sweep all tiles (no NEXT_GROUP state)
+            per_tile = TILE_SETUP + gather + (GROUP_FIXED - 1 + K) + NEXT_TILE
+            cycles = params + G * (ext_load_cycles(K) + tiles * per_tile)
+        self.stats.cycles.append(cycles + INSTR_OVERHEAD)
         self.stats.macs.append(P * real_k * G * N)
 
     def _dwconv(self, ins: Instr):
@@ -163,16 +196,16 @@ class NpuSim:
         words, _ = self._gather_words(ins, ins.in_zp)                                 # [P, k, k, cb, N]
         P = words.shape[0]
         A = words.reshape(P, T, cb, N).astype(np.int64)
-        w_addr = ins.w_base + np.arange(cb * T)
-        self._check(w_addr, isa.W_DEPTH, "weight")
-        Wm = self.wmem[w_addr].astype(np.int64).reshape(cb, T, N)
+        Wm = self._weights(ins, cb * T).reshape(cb, T, N)
         acc = np.einsum("ptgc,gtc->pgc", A, Wm)                                       # [P, cb, N]
         self._write_out(ins, self._requant(ins, acc, cb))
-        # v1 RTL: CONV datapath with block-diagonal weights, so K = T*N and the A rows are
-        # re-gathered for every channel block.
+        # CONV datapath with block-diagonal weights (K = T*N), A re-gathered per channel block;
+        # depthwise weights always fit the weight buffer (cached).
         tiles = -(-P // N)
-        per_tile = cb * (N * T + GATHER_TAIL + GROUP_FIXED + T * N) + NEXT_TILE
-        self.stats.cycles.append(tiles * per_tile + INSTR_OVERHEAD)
+        assert cb * T <= isa.WBUF_DEPTH
+        per_tile = TILE_SETUP + cb * (N * T + GATHER_TAIL_WORD + GROUP_FIXED + T * N) + NEXT_TILE
+        cycles = ext_load_cycles(cb * N * isa.PARAM_WORDS) + ext_load_cycles(cb * T) + tiles * per_tile
+        self.stats.cycles.append(cycles + INSTR_OVERHEAD)
         self.stats.macs.append(P * T * cb * N)
 
     def _maxpool(self, ins: Instr):

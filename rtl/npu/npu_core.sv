@@ -1,25 +1,18 @@
-// npu_core: instruction sequencer, memories, execution units, host/debug access.
+// npu_core: instruction sequencer, on-chip memories, execution units, host/debug access.
 //
-// Memories: instruction, packed input buffer, activation, weight store, param store.
-// (In V2 the weight and param stores are on-chip RAMs; V3 replaces them with streaming
-// from flash/SDRAM behind the same read ports.)
+// On chip: instruction memory and activation memory (which also holds the packed input
+// image). Weights and params live in an external store (flash/SDRAM) reached through a
+// burst-read port; the tile engine buffers what it needs.
 //
-// Host port: writes any memory while the core is idle or paused. Debug port: reads
-// activation memory while idle or paused. With step_mode set, the core pauses after
-// every instruction until `resume`, so a testbench can check each layer's output.
+// Host port: writes instruction or activation memory while the core is idle or paused.
+// Debug port: reads activation memory while idle or paused. With step_mode set, the core
+// pauses after every instruction until `resume`, so a testbench can check each layer.
 
 `default_nettype none
 
 module npu_core
     import npu_pkg::*;
-#(
-    // Physical memory depths (default: the full ISA address spaces, for simulation).
-    // Synthesis probes override these with sizes that fit on chip.
-    parameter int ACT_MEM = ACT_DEPTH,
-    parameter int W_MEM   = W_DEPTH,
-    parameter int P_MEM   = P_DEPTH,
-    parameter int IN_MEM  = IN_DEPTH
-) (
+(
     input  wire logic                clk,
     input  wire logic                rst,
     // control
@@ -36,15 +29,24 @@ module npu_core
     output      logic [31:0]         instr_cycles,  // cycles taken by the last instruction
     // host write port
     input  wire logic                host_we,
-    input  wire logic [2:0]          host_sel,      // 0 imem, 1 input, 2 act, 3 weight, 4 param
-    input  wire logic [15:0]         host_addr,
+    input  wire logic [2:0]          host_sel,      // 0 imem, 2 act (others: not in the core)
+    /* verilator lint_off UNUSEDSIGNAL */
+    input  wire logic [15:0]         host_addr,     // 16 bits for the external store; core uses fewer
+    /* verilator lint_on UNUSEDSIGNAL */
     input  wire logic [INSTR_W-1:0]  host_wdata,
     // debug read port (activation memory, 1-cycle latency)
     input  wire logic [ACT_AW-1:0]   dbg_addr,
-    output      logic [WORD_W-1:0]   dbg_rdata
+    output      logic [WORD_W-1:0]   dbg_rdata,
+    // external store (weights + params): burst reads
+    output      logic                ext_req,
+    output      logic [EXT_AW-1:0]   ext_addr,
+    output      logic [15:0]         ext_len,
+    input  wire logic                ext_ack,
+    input  wire logic                ext_rvalid,
+    input  wire logic [WORD_W-1:0]   ext_rdata
 );
 
-    localparam logic [2:0] SEL_IMEM = 3'd0, SEL_IN = 3'd1, SEL_ACT = 3'd2, SEL_W = 3'd3, SEL_P = 3'd4;
+    localparam logic [2:0] SEL_IMEM = 3'd0, SEL_ACT = 3'd2;
 
     typedef enum logic [2:0] {Q_IDLE, Q_FETCH, Q_DECODE, Q_WAIT, Q_PAUSE, Q_NEXT} qstate_e;
     typedef enum logic [1:0] {U_NONE, U_TILE, U_POOL, U_ARGMAX} unit_e;
@@ -63,35 +65,13 @@ module npu_core
         .clk, .we(host_ok && host_we && host_sel == SEL_IMEM), .waddr(IMEM_AW'(host_addr)),
         .wdata(host_wdata), .raddr(pc), .rdata(imem_rdata));
 
-    logic [IN_AW-1:0] in_raddr;
-    logic [7:0]       in_rdata;
-    // Address ports keep the ISA widths; physical memories use the low bits.
-    localparam int IN_PA = $clog2(IN_MEM), ACT_PA = $clog2(ACT_MEM);
-    localparam int W_PA = $clog2(W_MEM), P_PA = $clog2(P_MEM);
-
-    sdpram #(.W(8), .D(IN_MEM)) u_inbuf (
-        .clk, .we(host_ok && host_we && host_sel == SEL_IN), .waddr(IN_PA'(host_addr)),
-        .wdata(host_wdata[7:0]), .raddr(IN_PA'(in_raddr)), .rdata(in_rdata));
-
     logic [ACT_AW-1:0] act_raddr, act_waddr;
     logic [WORD_W-1:0] act_rdata, act_wdata;
     logic              act_we;
-    sdpram #(.W(WORD_W), .D(ACT_MEM)) u_act (
-        .clk, .we(act_we), .waddr(ACT_PA'(act_waddr)), .wdata(act_wdata),
-        .raddr(ACT_PA'(act_raddr)), .rdata(act_rdata));
+    sdpram #(.W(WORD_W), .D(ACT_DEPTH)) u_act (
+        .clk, .we(act_we), .waddr(act_waddr), .wdata(act_wdata),
+        .raddr(act_raddr), .rdata(act_rdata));
     assign dbg_rdata = act_rdata;
-
-    logic [W_AW-1:0]   w_raddr;
-    logic [WORD_W-1:0] w_rdata;
-    sdpram #(.W(WORD_W), .D(W_MEM)) u_wmem (
-        .clk, .we(host_ok && host_we && host_sel == SEL_W), .waddr(W_PA'(host_addr)),
-        .wdata(host_wdata[WORD_W-1:0]), .raddr(W_PA'(w_raddr)), .rdata(w_rdata));
-
-    logic [P_AW-1:0]    p_raddr;
-    logic [PARAM_W-1:0] p_rdata;
-    sdpram #(.W(PARAM_W), .D(P_MEM)) u_pmem (
-        .clk, .we(host_ok && host_we && host_sel == SEL_P), .waddr(P_PA'(host_addr)),
-        .wdata(host_wdata[PARAM_W-1:0]), .raddr(P_PA'(p_raddr)), .rdata(p_rdata));
 
     // ---------------------------------------------------------------- execution units
     logic tile_start, tile_done, pool_start, pool_done;
@@ -102,7 +82,7 @@ module npu_core
     npu_tile_engine u_tile (
         .clk, .rst, .start(tile_start), .ins, .done(tile_done),
         .act_raddr(t_act_raddr), .act_rdata, .act_we(t_act_we), .act_waddr(t_act_waddr),
-        .act_wdata(t_act_wdata), .in_raddr, .in_rdata, .w_raddr, .w_rdata, .p_raddr, .p_rdata);
+        .act_wdata(t_act_wdata), .ext_req, .ext_addr, .ext_len, .ext_ack, .ext_rvalid, .ext_rdata);
 
     npu_pool u_pool (
         .clk, .rst, .start(pool_start), .ins, .done(pool_done),
