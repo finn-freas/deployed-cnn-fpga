@@ -51,6 +51,10 @@ SRCS_dp_probe_top := $(ROOT)/rtl/npu/npu_pkg.sv $(ROOT)/rtl/npu/npu_pe.sv $(ROOT
 SRCS_memdp_probe_top := $(SRCS_dp_probe_top) $(ROOT)/rtl/common/sdpram.sv memdp_probe_top.sv
 SRCS_npu_probe_small_top := $(NPU_SRCS) npu_probe_small_top.sv
 
+# The person detector: NPU + flash boot + UART + HDMI overlay
+SRCS_npu_board_top := $(NPU_SRCS) 	$(ROOT)/rtl/common/reset_sync.sv 	$(ROOT)/rtl/common/spi_flash_reader.sv 	$(ROOT)/rtl/board/uart.sv 	$(ROOT)/rtl/board/npu_system.sv 	$(ROOT)/rtl/board/bin2bcd.sv 	$(ROOT)/rtl/board/font_rom.sv 	$(ROOT)/rtl/board/npu_display.sv 	$(ROOT)/rtl/video/video_timing.sv 	$(ROOT)/rtl/video/tmds_encoder.sv 	$(ROOT)/rtl/video/dvi_tx.sv 	npu_board_top.sv
+PACK_ARGS_npu_board_top := --mspi_as_gpio
+
 SRCS := $(SRCS_$(TOP))
 
 .PHONY: all flash prog clean
@@ -70,7 +74,7 @@ $(BUILD)/$(TOP)-pnr.json: $(BUILD)/$(TOP)-synth.json $(CST)
 		--freq $(FREQ_MHZ) $(NEXTPNR_ARGS) -l $(BUILD)/nextpnr.log --quiet
 
 $(BUILD)/$(TOP).fs: $(BUILD)/$(TOP)-pnr.json
-	$(ENV) gowin_pack -c -d $(FAMILY) -o $@ $< 2> >(grep -v "UserWarning\|warnings.warn" >&2)
+	$(ENV) gowin_pack -c -d $(FAMILY) $(PACK_ARGS_$(TOP)) -o $@ $< 2> >(grep -v "UserWarning\|warnings.warn" >&2)
 	@echo "--- $(TOP): timing (target $(FREQ_MHZ) MHz) ---"
 	@grep "Max frequency for clock" $(BUILD)/nextpnr.log | sed 's/^Info: */  /' | sort -u
 	@echo "--- utilization ---"

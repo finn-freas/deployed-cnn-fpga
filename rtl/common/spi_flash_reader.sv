@@ -61,7 +61,7 @@ module spi_flash_reader #(
                     // first command bit is presented now, with SCLK low
                     spi_cs_n   <= 1'b0;
                     spi_clk    <= 1'b0;
-                    {spi_mosi, shift_out} <= {8'h03, FLASH_BASE + {5'b0, addr, 3'b000}, 1'b0};
+                    {spi_mosi, shift_out} <= {8'h03, FLASH_BASE + 24'({addr, 3'b000}), 1'b0};
                     bits_left  <= 6'd32;
                     words_left <= len;
                     bit_idx    <= '0;
