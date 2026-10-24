@@ -2,7 +2,7 @@
 
 **Created:** 2026-10-23
 **Author:** GateFlow Planner
-**Status:** Draft (supersedes `vision_npu.md` as the project goal; that plan's Phases 0–1 are done and reused)
+**Status:** Superseded by [`vww_npu_compiler.md`](vww_npu_compiler.md). The project goal changed to MLPerf Tiny VWW + an ONNX compiler. The YOLO training setup in `sw/yolo/` is kept for possible later use.
 
 ## Goal
 
