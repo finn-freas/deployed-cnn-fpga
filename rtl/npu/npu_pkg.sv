@@ -13,6 +13,8 @@ package npu_pkg;
     localparam int W_DEPTH    = 65536;
     localparam int P_DEPTH    = 4096;
     localparam int IMEM_DEPTH = 64;
+    localparam int IN_DEPTH   = 32768;
+    localparam int IN_AW      = 15;
     localparam int K_MAX      = 1024;
     localparam int ACT_AW     = 13;
     localparam int W_AW       = 16;

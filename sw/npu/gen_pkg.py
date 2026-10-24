@@ -31,6 +31,8 @@ def render() -> str:
         f"    localparam int W_DEPTH    = {isa.W_DEPTH};",
         f"    localparam int P_DEPTH    = {isa.P_DEPTH};",
         f"    localparam int IMEM_DEPTH = {isa.IMEM_DEPTH};",
+        f"    localparam int IN_DEPTH   = {isa.IN_DEPTH};",
+        f"    localparam int IN_AW      = {clog2(isa.IN_DEPTH)};",
         f"    localparam int K_MAX      = {isa.K_MAX};",
         f"    localparam int ACT_AW     = {clog2(isa.ACT_DEPTH)};",
         f"    localparam int W_AW       = {clog2(isa.W_DEPTH)};",
