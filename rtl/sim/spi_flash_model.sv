@@ -42,7 +42,7 @@ module spi_flash_model (
             miso    <= 1'b0;
             started <= 1'b0;
             out_bit <= 3'd7;
-        end else if (nbits == 6'd32) begin
+        end else if (nbits == 6'd32 && cmd[31:24] == 8'h03) begin   // only READ is modelled
             logic [22:0] a;
             a = started ? ptr : cmd[22:0];
             miso    <= mem[a][out_bit];
