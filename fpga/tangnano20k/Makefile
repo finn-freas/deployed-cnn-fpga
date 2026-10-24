@@ -46,7 +46,9 @@ NPU_SRCS := \
 SRCS_npu_probe_top := $(NPU_SRCS) npu_probe_top.sv
 SRCS_dsp_probe_top := dsp_probe_top.sv
 SRCS_dsp_mix_probe_top := dsp_mix_probe_top.sv
+SRCS_mem_probe_top := $(ROOT)/rtl/common/sdpram.sv mem_probe_top.sv
 SRCS_dp_probe_top := $(ROOT)/rtl/npu/npu_pkg.sv $(ROOT)/rtl/npu/npu_pe.sv $(ROOT)/rtl/npu/npu_array.sv $(ROOT)/rtl/npu/npu_requant.sv dp_probe_top.sv
+SRCS_memdp_probe_top := $(SRCS_dp_probe_top) $(ROOT)/rtl/common/sdpram.sv memdp_probe_top.sv
 SRCS_npu_probe_small_top := $(NPU_SRCS) npu_probe_small_top.sv
 
 SRCS := $(SRCS_$(TOP))
