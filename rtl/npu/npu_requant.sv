@@ -74,15 +74,17 @@ module npu_requant
     end
 
     // ---------------- stage 3: rounding
-    logic signed [31:0] s3_y;
+    // 40 bits: single rounding with a left shift can exceed int32 (outside TFLite's valid
+    // range); keeping the extra bits makes the final clamp saturate instead of wrapping.
+    logic signed [39:0] s3_y;
     logic signed [7:0]  s3_zp, s3_min, s3_max;
 
     always_ff @(posedge clk) begin
         logic signed [63:0] s, mag;
-        logic signed [31:0] hi, mask, rem, thr;
+        logic signed [31:0] hi, mask, rem, thr, q32;
         if (s2_rmode) begin
             // single rounding: round half up, arithmetic shift
-            s3_y <= 32'((s2_prod + (64'sd1 <<< (s2_total - 7'd1))) >>> s2_total);
+            s3_y <= 40'((s2_prod + (64'sd1 <<< (s2_total - 7'd1))) >>> s2_total);
         end else begin
             // SaturatingRoundingDoublingHighMul: (prod + nudge) / 2^31, truncating toward zero
             s   = s2_prod + ((s2_prod >= 0) ? 64'sd1073741824 : -64'sd1073741823);
@@ -93,7 +95,8 @@ module npu_requant
             mask = (32'sd1 <<< s2_rs) - 32'sd1;
             rem  = hi & mask;
             thr  = (mask >>> 1) + ((hi < 0) ? 32'sd1 : 32'sd0);
-            s3_y <= (hi >>> s2_rs) + ((rem > thr) ? 32'sd1 : 32'sd0);
+            q32  = (hi >>> s2_rs) + ((rem > thr) ? 32'sd1 : 32'sd0);
+            s3_y <= 40'(q32);
         end
         s3_zp  <= s2_zp;
         s3_min <= s2_min;
@@ -102,10 +105,10 @@ module npu_requant
 
     // ---------------- stage 4: zero point + clamp
     always_ff @(posedge clk) begin
-        logic signed [32:0] y;
-        y = 33'(s3_y) + 33'(s3_zp);
-        if (y < 33'(s3_min))      out <= s3_min;
-        else if (y > 33'(s3_max)) out <= s3_max;
+        logic signed [40:0] y;
+        y = 41'(s3_y) + 41'(s3_zp);
+        if (y < 41'(s3_min))      out <= s3_min;
+        else if (y > 41'(s3_max)) out <= s3_max;
         else                      out <= 8'(y);
     end
 
