@@ -75,6 +75,12 @@ def export(tflite_path: Path):
         if name == "RESHAPE":
             alias[out] = alias.get(ins[0], ins[0])
             continue
+        if name == "SOFTMAX":
+            # Monotonic, so argmax is unchanged: the NPU stops at the logits. Only valid as
+            # the final op; recorded so reports can say scores were computed off-device.
+            assert out == g.outputs[0], "SOFTMAX is only supported as the final op"
+            ir["output"]["softmax_dropped"] = True
+            continue
         src = alias.get(ins[0], ins[0])
         s_in, z_in = quant(T[src])
         s_out, z_out = quant(T[out])
@@ -110,11 +116,29 @@ def export(tflite_path: Path):
             arrays[L["name"] + ".w"] = w.astype(np.int8)        # [O, kh, kw, I]
             arrays[L["name"] + ".b"] = b.astype(np.int32)       # [O]
             arrays[L["name"] + ".w_scale"] = np.broadcast_to(w_scale, (w.shape[0],)).astype(np.float32)
-        elif name == "MAX_POOL_2D":
-            assert opt.padding == 1 and opt.fusedActivationFunction == 0, "VALID, no activation"
-            assert s_in[0] == s_out[0] and z_in[0] == z_out[0]
-            L.update(op="maxpool", k=int(opt.filterHeight), stride=int(opt.strideH))
+        elif name == "DEPTHWISE_CONV_2D":
+            w = tensor_array(m, T[ins[1]])                       # [1, kh, kw, C*mult]
+            b = tensor_array(m, T[ins[2]])
+            w_scale, w_zp = quant(T[ins[1]])
+            assert np.all(w_zp == 0), "weights must be symmetric"
+            assert opt.depthMultiplier == 1, "depth multiplier must be 1"
+            assert opt.dilationHFactor == 1 and opt.dilationWFactor == 1
+            kh, kw = w.shape[1:3]
+            H, W, C = L["in_shape"]
+            assert kh == kw and opt.strideH == opt.strideW
+            pt = same_pad(H, kh, opt.strideH)[1] if opt.padding == 0 else 0
+            L.update(op="dwconv", kh=int(kh), kw=int(kw), stride=int(opt.strideH), pad=int(pt),
+                     act=ACT[opt.fusedActivationFunction])
+            arrays[L["name"] + ".w"] = w[0].transpose(2, 0, 1).astype(np.int8)   # [C, kh, kw]
+            arrays[L["name"] + ".b"] = b.astype(np.int32)
+            arrays[L["name"] + ".w_scale"] = np.broadcast_to(w_scale, (C,)).astype(np.float32)
+        elif name in ("MAX_POOL_2D", "AVERAGE_POOL_2D"):
+            assert s_in[0] == s_out[0] and z_in[0] == z_out[0], "pooling must preserve quantization"
             assert opt.filterHeight == opt.filterWidth and opt.strideH == opt.strideW
+            k = int(opt.filterHeight)
+            pt = same_pad(L["in_shape"][0], k, opt.strideH)[1] if opt.padding == 0 else 0
+            L.update(op="maxpool" if name == "MAX_POOL_2D" else "avgpool", k=k,
+                     stride=int(opt.strideH), pad=int(pt), act=ACT[opt.fusedActivationFunction])
         else:
             raise NotImplementedError(f"op {name} is not supported by the NPU")
         ir["layers"].append(L)
@@ -122,11 +146,20 @@ def export(tflite_path: Path):
     return buf, ir, arrays
 
 
-def golden(buf: bytes, ir: dict, n: int):
-    (_, _), (xt, yt) = tf.keras.datasets.mnist.load_data()
-    images, labels = xt[:n].astype(np.uint8), yt[:n].astype(np.int64)
-    # Input quantization is scale=1/255, zp=-128, so int8 = uint8 - 128 exactly.
+def load_images(spec: str, n: int):
+    """'mnist' -> MNIST test set; otherwise an .npz with 'images' (uint8 NHWC) and 'labels'."""
+    if spec == "mnist":
+        (_, _), (xt, yt) = tf.keras.datasets.mnist.load_data()
+        return xt[:n, :, :, None].astype(np.uint8), yt[:n].astype(np.int64)
+    d = np.load(spec)
+    return d["images"][:n].astype(np.uint8), d["labels"][:n].astype(np.int64)
+
+
+def golden(buf: bytes, ir: dict, images: np.ndarray, labels: np.ndarray):
+    # Input quantization is scale=1/255, zp=-128, so int8 = uint8 - 128 exactly; this is
+    # what the NPU's packed-input CONV assumes.
     assert ir["input"]["zp"] == -128 and abs(ir["input"]["scale"] - 1 / 255) < 1e-9
+    assert list(images.shape[1:]) == ir["input"]["shape"], (images.shape, ir["input"]["shape"])
     x_int8 = (images.astype(np.int16) - 128).astype(np.int8)
 
     itp = tf.lite.Interpreter(
@@ -136,7 +169,7 @@ def golden(buf: bytes, ir: dict, n: int):
     itp.allocate_tensors()
     outs = {L["name"]: [] for L in ir["layers"]}
     for img in x_int8:
-        itp.set_tensor(ir["input"]["tensor"], img[None, :, :, None])
+        itp.set_tensor(ir["input"]["tensor"], img[None])
         itp.invoke()
         for L in ir["layers"]:
             outs[L["name"]].append(itp.get_tensor(L["out_tensor"])[0].reshape(L["out_shape"]).copy())
@@ -150,21 +183,23 @@ def main():
     ap.add_argument("tflite", type=Path)
     ap.add_argument("out", type=Path)
     ap.add_argument("--golden", type=int, default=1000, help="number of test images to dump")
+    ap.add_argument("--images", default="mnist", help="'mnist' or an .npz with images/labels")
     args = ap.parse_args()
 
     buf, ir, arrays = export(args.tflite)
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "ir.json").write_text(json.dumps(ir, indent=2))
     np.savez(args.out / "ir.npz", **arrays)
-    gold = golden(buf, ir, args.golden)
+    images, labels = load_images(args.images, args.golden)
+    gold = golden(buf, ir, images, labels)
     np.savez_compressed(args.out / "golden.npz", **gold)
 
-    final = gold[ir["layers"][-1]["name"]].reshape(args.golden, -1)
+    final = gold[ir["layers"][-1]["name"]].reshape(len(labels), -1)
     acc = float(np.mean(final.argmax(1) == gold["labels"]))
     for L in ir["layers"]:
         print(f"{L['name']:28s} {str(L['in_shape']):14s} -> {str(L['out_shape']):12s} "
               f"zp {L['in_zp']:4d}->{L['out_zp']:4d}")
-    print(f"golden: {args.golden} images, TFLite-ref accuracy {acc:.4f} -> {args.out}")
+    print(f"golden: {len(labels)} images, TFLite-ref accuracy {acc:.4f} -> {args.out}")
 
 
 if __name__ == "__main__":

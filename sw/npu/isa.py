@@ -2,6 +2,10 @@
 
 rtl/npu/npu_pkg.sv is generated from this file (sw/npu/gen_pkg.py); a test checks
 the two stay in sync. See docs/isa.md for the semantics of each instruction.
+
+ISA v2: adds DWCONV and AVGPOOL, lets the first CONV read the packed (byte-per-
+channel) input buffer directly (in_src=1), and widens fields for MobileNet-sized
+models. LOAD_INPUT from v1 is gone.
 """
 
 from dataclasses import dataclass, field, fields
@@ -11,12 +15,14 @@ from enum import IntEnum
 N = 8                 # systolic array is N x N; also channels per activation/weight word
 DATA_W = 8            # int8 operands
 ACC_W = 32            # int32 accumulators
-ACT_DEPTH = 2048      # activation memory, 64-bit words
-W_DEPTH = 2048        # weight memory, 64-bit words
-P_DEPTH = 256         # param memory, one entry per output channel
-IMEM_DEPTH = 32       # instruction memory, 128-bit words
-K_MAX = 1024          # max reduction length (kh*kw*Cb*8) per CONV
-INSTR_W = 128
+ACT_DEPTH = 8192      # activation memory address space, 64-bit words
+W_DEPTH = 65536       # weight store address space (streamed from flash/SDRAM), 64-bit words
+P_DEPTH = 4096        # param store address space, one entry per output channel (streamed with
+                      # the weights; on chip only the current layer's params are buffered)
+IMEM_DEPTH = 64       # instruction memory, INSTR_W-bit words
+IN_DEPTH = 32768      # input buffer, bytes (packed HWC, uint8): 96*96*3 = 27648
+K_MAX = 1024          # max reduction length per CONV output (see Instr.K)
+INSTR_W = 160
 SHIFT_W = 6           # signed requant shift: >0 left, <=0 right
 
 
@@ -24,32 +30,34 @@ class Op(IntEnum):
     NOP = 0x0
     CONV = 0x1
     MAXPOOL = 0x2
-    LOAD_INPUT = 0x3
+    DWCONV = 0x3
     ARGMAX = 0x4
+    AVGPOOL = 0x5
     END = 0xF
 
 
 # (name, width, signed). Packed LSB-first in this order.
 FIELDS = [
     ("op",       4, False),
-    ("in_base", 11, False),
-    ("out_base", 11, False),
-    ("w_base",  11, False),
-    ("p_base",   8, False),
+    ("in_base", 16, False),
+    ("out_base", 16, False),
+    ("w_base",  16, False),
+    ("p_base",  12, False),
     ("in_h",     7, False),
     ("in_w",     7, False),
-    ("in_cb",    6, False),
+    ("in_cb",    6, False),   # channel blocks; for in_src=1 the channel count C
     ("out_h",    7, False),
     ("out_w",    7, False),
     ("out_g",    6, False),
     ("ksize",    3, False),
     ("stride",   2, False),
-    ("pad",      3, False),
+    ("pad",      3, False),   # top/left padding; bottom/right follows from the bounds
     ("in_zp",    8, True),
     ("out_zp",   8, True),
     ("act_min",  8, True),
     ("act_max",  8, True),
-    ("rmode",    1, False),   # requant rounding: 0 = double (conv), 1 = single (FC); see quant.py
+    ("rmode",    1, False),   # requant rounding: 0 = double, 1 = single; see quant.py
+    ("in_src",   1, False),   # CONV input: 0 = activation memory, 1 = packed input buffer
 ]
 assert sum(w for _, w, _ in FIELDS) <= INSTR_W
 
@@ -75,11 +83,16 @@ class Instr:
     act_min: int = -128
     act_max: int = 127
     rmode: int = 0
+    in_src: int = 0
     comment: str = field(default="", compare=False)
 
     @property
     def K(self) -> int:
-        """Reduction length of a CONV."""
+        """Reduction length per output value (CONV), or taps per channel (DWCONV)."""
+        if self.op == Op.DWCONV:
+            return self.ksize * self.ksize
+        if self.in_src:   # packed input: k = (ky*ksize + kx)*C + c, padded to a multiple of N
+            return -(-self.ksize * self.ksize * self.in_cb // N) * N
         return self.ksize * self.ksize * self.in_cb * N
 
     def encode(self) -> int:
@@ -105,10 +118,11 @@ class Instr:
         return cls(**kw)
 
     def __str__(self) -> str:
-        skip = {"comment"}
+        skip = {"comment", "op"}
+        always = {"in_base", "out_base"} if self.op not in (Op.NOP, Op.END) else set()
         parts = [f"{f.name}={getattr(self, f.name)}" for f in fields(self)
-                 if f.name not in skip and f.name != "op" and getattr(self, f.name) != f.default]
-        return f"{self.op.name:10s} " + " ".join(parts) + (f"   # {self.comment}" if self.comment else "")
+                 if f.name not in skip and (f.name in always or getattr(self, f.name) != f.default)]
+        return f"{self.op.name:8s} " + " ".join(parts) + (f"   # {self.comment}" if self.comment else "")
 
 
 # ---------------------------------------------------------------- param memory word

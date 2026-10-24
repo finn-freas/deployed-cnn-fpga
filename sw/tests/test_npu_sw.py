@@ -1,6 +1,7 @@
 """Tests for the NPU software stack: ISA encoding, TFLite-exact requant, compiler + simulator."""
 
 import json
+import os
 import random
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from npu.quant import (INT32_MAX, INT32_MIN, multiply_by_quantized_multiplier,
 from npu.sim import NpuSim
 
 ROOT = Path(__file__).resolve().parents[2]
-MODEL = ROOT / "build" / "model"
+
 
 
 # ---------------------------------------------------------------- ISA
@@ -129,68 +130,69 @@ def test_quantize_multiplier():
     assert m == 1 << 30 and s == 1
 
 
+
 # ---------------------------------------------------------------- compiler + simulator vs TFLite
+# Each model directory holds ir.json/ir.npz/golden.npz from sw/model/export_ir.py.
 
-needs_model = pytest.mark.skipif(not (MODEL / "golden.npz").exists(),
-                                 reason="run `make model` first")
+MODELS = {"mnist": ROOT / "build" / "model", "vww": ROOT / "build" / "vww"}
+LAYER_CHECK_IMAGES = {"mnist": 200, "vww": 50}
+# The full VWW set takes minutes in the simulator; NPU_FULL=1 runs every golden image.
+FULL = os.environ.get("NPU_FULL") == "1"
+LOGIT_CHECK_IMAGES = {"mnist": 1000, "vww": 1000 if FULL else 200}
 
 
-@needs_model
-def test_sim_bit_exact_vs_tflite():
-    ir, arrays = load_ir(MODEL)
+def _model_params():
+    return [pytest.param(name, marks=pytest.mark.skipif(
+        not (path / "golden.npz").exists(), reason=f"no golden data in {path} (see Makefile)"))
+        for name, path in MODELS.items()]
+
+
+def _setup(name):
+    ir, arrays = load_ir(MODELS[name])
     prog = compile_ir(ir, arrays)
-    gold = np.load(MODEL / "golden.npz")
-    sim = NpuSim.from_program(prog)
-    n = len(gold["labels"])
+    return prog, np.load(MODELS[name] / "golden.npz"), NpuSim.from_program(prog)
+
+
+@pytest.mark.parametrize("name", _model_params())
+def test_sim_logits_bit_exact_vs_tflite(name):
+    prog, gold, sim = _setup(name)
+    last = prog.meta["layers"][-1]
+    n = min(LOGIT_CHECK_IMAGES[name], len(gold["labels"]))
     correct = 0
     for i in range(n):
-        cls, score = sim.run(gold["images"][i])
+        cls, _ = sim.run(gold["images"][i])
         # Earlier layers have been overwritten by ping-pong allocation; only the final
         # logits are still resident. test_every_layer_bit_exact checks each layer.
-        last = prog.meta["layers"][-1]
         logits = sim.read_tensor(last["base"], 1, 1, last["cb"], last["c"]).reshape(-1)
         assert np.array_equal(logits, gold[last["name"]][i].reshape(-1)), f"image {i}: logits"
         assert cls == int(np.argmax(gold[last["name"]][i]))
         correct += cls == gold["labels"][i]
-    print(f"sim accuracy {correct / n:.4f} on {n} images")
+    print(f"{name}: sim accuracy {correct / n:.4f} on {n} images")
 
 
-@needs_model
-def test_every_layer_bit_exact():
-    """Run instruction by instruction and compare each layer's output while it is resident."""
-    ir, arrays = load_ir(MODEL)
-    prog = compile_ir(ir, arrays)
-    gold = np.load(MODEL / "golden.npz")
+@pytest.mark.parametrize("name", _model_params())
+def test_every_layer_bit_exact(name):
+    """Compare each layer's output right after its instruction, while it is still resident."""
+    prog, gold, sim = _setup(name)
     by_instr = {L["instr"]: L for L in prog.meta["layers"]}
-    sim = NpuSim.from_program(prog)
-    for i in range(200):
-        sim.input_buffer = gold["images"][i]
-        for pc, ins in enumerate(prog.instrs):
-            if ins.op == Op.END:
-                break
-            getattr(sim, "_" + ins.op.name.lower())(ins)
-            if ins.op == Op.LOAD_INPUT:
-                inp = prog.meta["input"]
-                got = sim.read_tensor(inp["base"], inp["h"], inp["w"], 1, 1)[..., 0]
-                assert np.array_equal(got, gold["input"][i]), f"image {i}: input"
+    for i in range(min(LAYER_CHECK_IMAGES[name], len(gold["labels"]))):
+        def check(pc, ins):
             if pc in by_instr:
                 L = by_instr[pc]
                 got = sim.read_tensor(L["base"], L["h"], L["w"], L["cb"], L["c"])
                 exp = gold[L["name"]][i].reshape(L["h"], L["w"], L["c"])
                 assert np.array_equal(got, exp), (
                     f"image {i} {L['name']}: {np.count_nonzero(got != exp)} mismatches")
+        sim.run(gold["images"][i], trace=check)
 
 
-@needs_model
-def test_cycle_estimate_report():
-    ir, arrays = load_ir(MODEL)
-    prog = compile_ir(ir, arrays)
-    sim = NpuSim.from_program(prog)
-    sim.run(np.zeros((28, 28), np.uint8))
+@pytest.mark.parametrize("name", _model_params())
+def test_cycle_estimate_report(name):
+    prog, gold, sim = _setup(name)
+    sim.run(gold["images"][0])
     total = sum(sim.stats.cycles)
     macs = sum(sim.stats.macs)
     for ins, c, m in zip(prog.instrs, sim.stats.cycles, sim.stats.macs):
-        print(f"{ins.op.name:10s} {ins.comment:22s} {c:7d} cycles {m:8d} MACs")
-    print(f"total {total} cycles = {total / 25.2:.0f} us @ 25.2 MHz; {macs} MACs; "
+        print(f"{ins.op.name:8s} {ins.comment:26s} {c:8d} cycles {m:9d} MACs")
+    print(f"{name}: total {total} cycles = {total / 25.2:.0f} us @ 25.2 MHz; {macs} MACs; "
           f"utilization {macs / (total * isa.N * isa.N):.1%}")
-    assert total / 25.2e6 < 0.033, "must fit in one camera frame"

@@ -9,17 +9,17 @@ package npu_pkg;
     localparam int DATA_W     = 8;
     localparam int ACC_W      = 32;
     localparam int WORD_W     = N * DATA_W;   // activation / weight word
-    localparam int ACT_DEPTH  = 2048;
-    localparam int W_DEPTH    = 2048;
-    localparam int P_DEPTH    = 256;
-    localparam int IMEM_DEPTH = 32;
+    localparam int ACT_DEPTH  = 8192;
+    localparam int W_DEPTH    = 65536;
+    localparam int P_DEPTH    = 4096;
+    localparam int IMEM_DEPTH = 64;
     localparam int K_MAX      = 1024;
-    localparam int ACT_AW     = 11;
-    localparam int W_AW       = 11;
-    localparam int P_AW       = 8;
-    localparam int IMEM_AW    = 5;
+    localparam int ACT_AW     = 13;
+    localparam int W_AW       = 16;
+    localparam int P_AW       = 12;
+    localparam int IMEM_AW    = 6;
     localparam int K_W        = 11;
-    localparam int INSTR_W    = 128;
+    localparam int INSTR_W    = 160;
     localparam int SHIFT_W    = 6;
     localparam int PARAM_W    = 70;
 
@@ -31,14 +31,16 @@ package npu_pkg;
         OP_NOP        = 4'h0,
         OP_CONV       = 4'h1,
         OP_MAXPOOL    = 4'h2,
-        OP_LOAD_INPUT = 4'h3,
+        OP_DWCONV     = 4'h3,
         OP_ARGMAX     = 4'h4,
+        OP_AVGPOOL    = 4'h5,
         OP_END        = 4'hF
     } op_e;
 
     // Fields listed MSB first (isa.py lists them LSB first).
     typedef struct packed {
-        logic [1:0] rsvd;
+        logic [13:0] rsvd;
+        logic in_src;
         logic rmode;
         logic signed [7:0] act_max;
         logic signed [7:0] act_min;
@@ -53,10 +55,10 @@ package npu_pkg;
         logic [5:0] in_cb;
         logic [6:0] in_w;
         logic [6:0] in_h;
-        logic [7:0] p_base;
-        logic [10:0] w_base;
-        logic [10:0] out_base;
-        logic [10:0] in_base;
+        logic [11:0] p_base;
+        logic [15:0] w_base;
+        logic [15:0] out_base;
+        logic [15:0] in_base;
         op_e op;
     } instr_t;
 

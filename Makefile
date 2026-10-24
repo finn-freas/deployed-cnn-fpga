@@ -3,6 +3,7 @@
 #   make model    - train the MNIST CNN (optional; a trained model is committed)
 #   make ir       - export the TFLite model to IR + golden tensors (TensorFlow env)
 #   make compile  - compile IR to NPU memory images (build/npu)
+#   make vww      - MLPerf Tiny VWW: build vww01, export IR + golden, compile (build/npu_vww)
 #   make pkg      - regenerate rtl/npu/npu_pkg.sv from sw/npu/isa.py
 #   make lint     - Verilator lint of all portable RTL
 #   make test     - software tests + cocotb RTL tests
@@ -20,7 +21,7 @@ MODEL ?= models/mnist_int8.tflite
 RTL_PKGS     := $(shell find rtl -name '*_pkg.sv' -not -path 'rtl/gowin/*' | sort)
 RTL_MODULES  := $(shell find rtl -name '*.sv' -not -name '*_pkg.sv' -not -path 'rtl/gowin/*' | sort)
 
-.PHONY: help env model ir compile pkg lint test test-sw test-rtl fpga clean
+.PHONY: help env model ir compile vww pkg lint test test-sw test-rtl fpga clean
 
 help:
 	@sed -n 's/^#   make /  make /p' Makefile
@@ -47,6 +48,18 @@ ir: build/model/golden.npz
 
 compile: ir
 	cd sw && $(PY) -m npu.compiler ../build/model --out ../build/npu
+
+# MLPerf Tiny Visual Wake Words. VWW_OFFICIAL=<extracted vw_coco2014_96 dir> uses the exact
+# MLPerf images; otherwise vww01 is rebuilt from COCO val2017 (approximate pixels).
+VWW_MODEL := models/vww/vww_96_int8.tflite
+build/vww/vww01.npz: sw/model/make_vww01.py models/vww/y_labels.csv
+	$(PYTF) sw/model/make_vww01.py --out $@ $(if $(VWW_OFFICIAL),--official $(VWW_OFFICIAL))
+
+build/vww/golden.npz: $(VWW_MODEL) sw/model/export_ir.py build/vww/vww01.npz
+	$(PYTF) sw/model/export_ir.py $(VWW_MODEL) build/vww --golden 1000 --images build/vww/vww01.npz 2>&1 | grep -v -i warn
+
+vww: build/vww/golden.npz
+	cd sw && $(PY) -m npu.compiler ../build/vww --out ../build/npu_vww
 
 pkg:
 	cd sw && $(PY) -m npu.gen_pkg ../rtl/npu/npu_pkg.sv

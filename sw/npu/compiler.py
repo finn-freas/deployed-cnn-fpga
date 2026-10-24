@@ -18,6 +18,9 @@ from .isa import N, Instr, Op
 from .quant import (INT32_MAX, INT32_MIN, RMODE_DOUBLE, RMODE_SINGLE, effective_scale,
                     quantize_multiplier)
 
+# TFLite reference-kernel rounding per op, measured against BUILTIN_REF (see quant.py).
+RMODE = {"conv": RMODE_DOUBLE, "fc": RMODE_SINGLE, "dwconv": RMODE_DOUBLE}
+
 
 def ceil_div(a, b):
     return -(-a // b)
@@ -33,7 +36,8 @@ class Program:
 
     def write(self, out: Path):
         out.mkdir(parents=True, exist_ok=True)
-        (out / "program.hex").write_text("".join(f"{i.encode():032x}\n" for i in self.instrs))
+        hexw = isa.INSTR_W // 4
+        (out / "program.hex").write_text("".join(f"{i.encode():0{hexw}x}\n" for i in self.instrs))
         words = self.wmem[:self.w_used].view(np.uint8)
         (out / "weights.hex").write_text(
             "".join("".join(f"{b:02x}" for b in row[::-1]) + "\n" for row in words))  # byte 0 = LSB
@@ -41,6 +45,28 @@ class Program:
             "".join(f"{isa.encode_param(*p):018x}\n" for p in self.pmem))
         (out / "meta.json").write_text(json.dumps(self.meta, indent=2))
         (out / "program.txt").write_text("".join(f"{n:2d}: {i}\n" for n, i in enumerate(self.instrs)))
+
+    def add_weights(self, rows: np.ndarray, what: str) -> int:
+        base = self.w_used
+        if base + rows.shape[0] > isa.W_DEPTH:
+            raise MemoryError(f"weight store overflow at {what}")
+        self.wmem[base:base + rows.shape[0]] = rows.astype(np.int8)
+        self.w_used += rows.shape[0]
+        return base
+
+    def add_params(self, bias, w_sum, in_zp, scales, n_padded) -> int:
+        """Per-channel params; input zero point folded into the bias (padding = in_zp)."""
+        base = len(self.pmem)
+        for o in range(n_padded):
+            if o < len(bias):
+                b = int(bias[o] - in_zp * w_sum[o])
+                assert INT32_MIN <= b <= INT32_MAX
+                self.pmem.append((b, *quantize_multiplier(scales[o])))
+            else:
+                self.pmem.append((0, 0, 0))
+        if len(self.pmem) > isa.P_DEPTH:
+            raise MemoryError("param memory overflow")
+        return base
 
 
 class ActAllocator:
@@ -51,14 +77,17 @@ class ActAllocator:
 
     def place(self, size, avoid):
         lo, hi = avoid
-        base = self.depth - size if lo < self.depth // 2 else 0
-        if base < 0 or not (base + size <= lo or base >= hi):
-            raise MemoryError(f"activation memory: cannot place {size} words clear of [{lo},{hi})")
-        return base
+        room_below, room_above = lo, self.depth - hi
+        # Prefer the end with more free space, so consecutive layers alternate ends.
+        for base, fits in sorted([(0, size <= room_below), (self.depth - size, size <= room_above)],
+                                 key=lambda c: -(room_below if c[0] == 0 else room_above)):
+            if fits:
+                return base
+        raise MemoryError(f"activation memory: cannot place {size} words clear of [{lo},{hi})")
 
 
 def act_range(act: str, out_zp: int, out_scale: float):
-    if act == "none":
+    if act in ("none", ""):
         return -128, 127
     if act == "relu":
         return max(-128, out_zp), 127
@@ -71,21 +100,25 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
     prog = Program()
     alloc = ActAllocator(isa.ACT_DEPTH)
     H, W, C = ir["input"]["shape"]
-    assert C == 1, "LOAD_INPUT supports single-channel (grayscale) input"
-    cur = {"base": 0, "h": H, "w": W, "cb": 1, "c": 1}
-    prog.instrs.append(Instr(Op.LOAD_INPUT, out_base=0, in_h=H, in_w=W, in_zp=ir["input"]["zp"],
-                             comment=f"input {H}x{W} u8 -> i8"))
-    prog.meta = {"input": dict(cur), "layers": [], "isa": {
-        "N": N, "ACT_DEPTH": isa.ACT_DEPTH, "W_DEPTH": isa.W_DEPTH, "P_DEPTH": isa.P_DEPTH}}
+    assert H * W * C <= isa.IN_DEPTH, "input does not fit the input buffer"
+    cur = {"src": "input", "base": 0, "h": H, "w": W, "c": C, "cb": None, "words": 0}
+    prog.meta = {"input": {"h": H, "w": W, "c": C}, "layers": [], "isa": {
+        "N": N, "ACT_DEPTH": isa.ACT_DEPTH, "W_DEPTH": isa.W_DEPTH, "P_DEPTH": isa.P_DEPTH,
+        "INSTR_W": isa.INSTR_W}, "softmax_dropped": bool(ir["output"].get("softmax_dropped"))}
 
     for L in ir["layers"]:
         ih, iw, ic = L["in_shape"]
         oh, ow, oc = L["out_shape"]
-        assert (ih, iw, ceil_div(ic, N)) == (cur["h"], cur["w"], cur["cb"]), f"{L['name']}: shape chain"
-        in_cb = cur["cb"]
+        assert (ih, iw, ic) == (cur["h"], cur["w"], cur["c"]), f"{L['name']}: shape chain"
+        from_input = cur["src"] == "input"
+        if from_input and L["op"] != "conv":
+            raise NotImplementedError("the first layer must be a CONV (it reads the packed input)")
         out_g = ceil_div(oc, N)
-        size = oh * ow * out_g
-        base = alloc.place(size, (cur["base"], cur["base"] + cur["h"] * cur["w"] * cur["cb"]))
+        base = alloc.place(oh * ow * out_g, (cur["base"], cur["base"] + cur["words"]))
+        amin, amax = act_range(L.get("act", "none"), L["out_zp"], L["out_scale"])
+        common = dict(in_base=cur["base"], out_base=base, in_h=ih, in_w=iw, out_h=oh, out_w=ow,
+                      out_g=out_g, stride=L["stride"], pad=L.get("pad", 0), in_zp=L["in_zp"],
+                      out_zp=L["out_zp"], act_min=amin, act_max=amax, comment=L["name"])
 
         if L["op"] == "conv":
             k = L["kh"]
@@ -93,54 +126,60 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
             w = arrays[L["name"] + ".w"].astype(np.int64)          # [O, k, k, I]
             b = arrays[L["name"] + ".b"].astype(np.int64)
             w_scale = arrays[L["name"] + ".w_scale"]
-            K = k * k * in_cb * N
+            if from_input:
+                # Packed input: k index = (ky*k + kx)*C + c, padded to a multiple of N.
+                ins = Instr(Op.CONV, in_cb=C, in_src=1, ksize=k)
+                K = ins.K
+                flat = np.zeros((out_g * N, K), np.int64)
+                flat[:w.shape[0], :k * k * ic] = w.reshape(w.shape[0], -1)
+            else:
+                cb = cur["cb"]
+                ins = Instr(Op.CONV, in_cb=cb, ksize=k)
+                K = ins.K
+                # Channel-blocked: k index = ((ky*k + kx)*Cb + cb)*8 + c_in.
+                wp = np.zeros((out_g * N, k, k, cb * N), np.int64)
+                wp[:w.shape[0], :, :, :w.shape[3]] = w
+                flat = wp.reshape(out_g * N, K)
             assert K <= isa.K_MAX, f"{L['name']}: K={K} > K_MAX"
-
-            # Weights: pad I->Cb*8, O->G*8; rows ordered [g][ky][kx][cb*8+cin], 8 output channels per row.
-            wp = np.zeros((out_g * N, k, k, in_cb * N), np.int64)
-            wp[:w.shape[0], :, :, :w.shape[3]] = w
-            rows = wp.reshape(out_g, N, k, k, in_cb * N).transpose(0, 2, 3, 4, 1).reshape(out_g * K, N)
-            w_base = prog.w_used
-            if w_base + rows.shape[0] > isa.W_DEPTH:
-                raise MemoryError(f"weight memory overflow at {L['name']}")
-            prog.wmem[w_base:w_base + rows.shape[0]] = rows.astype(np.int8)
-            prog.w_used += rows.shape[0]
-
-            # Params: fold the input zero point into the bias (padding is filled with in_zp).
-            p_base = len(prog.pmem)
-            for o in range(out_g * N):
-                if o < w.shape[0]:
-                    bias = int(b[o] - L["in_zp"] * w[o].sum())
-                    assert INT32_MIN <= bias <= INT32_MAX
-                    mult, shift = quantize_multiplier(
-                        effective_scale(L["in_scale"], w_scale[o], L["out_scale"]))
-                    prog.pmem.append((bias, mult, shift))
-                else:
-                    prog.pmem.append((0, 0, 0))
-            if len(prog.pmem) > isa.P_DEPTH:
-                raise MemoryError("param memory overflow")
-
-            amin, amax = act_range(L["act"], L["out_zp"], L["out_scale"])
-            prog.instrs.append(Instr(
-                Op.CONV, in_base=cur["base"], out_base=base, w_base=w_base, p_base=p_base,
-                in_h=ih, in_w=iw, in_cb=in_cb, out_h=oh, out_w=ow, out_g=out_g,
-                ksize=k, stride=L["stride"], pad=L["pad"], in_zp=L["in_zp"], out_zp=L["out_zp"],
-                act_min=amin, act_max=amax, comment=L["name"],
-                rmode=RMODE_SINGLE if L.get("from_fc") else RMODE_DOUBLE))
-        elif L["op"] == "maxpool":
-            prog.instrs.append(Instr(
-                Op.MAXPOOL, in_base=cur["base"], out_base=base, in_h=ih, in_w=iw, in_cb=in_cb,
-                out_h=oh, out_w=ow, out_g=in_cb, ksize=L["k"], stride=L["stride"], comment=L["name"]))
+            rows = flat.reshape(out_g, N, K).transpose(0, 2, 1).reshape(out_g * K, N)
+            w_base = prog.add_weights(rows, L["name"])
+            scales = [effective_scale(L["in_scale"], s, L["out_scale"]) for s in w_scale]
+            p_base = prog.add_params(b, w.reshape(w.shape[0], -1).sum(1), L["in_zp"], scales,
+                                     out_g * N)
+            rmode = RMODE["fc" if L.get("from_fc") else "conv"]
+            prog.instrs.append(Instr(Op.CONV, in_cb=ins.in_cb, in_src=ins.in_src, ksize=k,
+                                     w_base=w_base, p_base=p_base, rmode=rmode, **common))
+        elif L["op"] == "dwconv":
+            k = L["kh"]
+            cb = cur["cb"]
+            assert out_g == cb
+            w = arrays[L["name"] + ".w"].astype(np.int64)          # [C, k, k]
+            b = arrays[L["name"] + ".b"].astype(np.int64)
+            w_scale = arrays[L["name"] + ".w_scale"]
+            wp = np.zeros((cb * N, k * k), np.int64)
+            wp[:w.shape[0]] = w.reshape(w.shape[0], -1)
+            rows = wp.reshape(cb, N, k * k).transpose(0, 2, 1).reshape(cb * k * k, N)  # [cb][tap] -> 8 ch
+            w_base = prog.add_weights(rows, L["name"])
+            scales = [effective_scale(L["in_scale"], s, L["out_scale"]) for s in w_scale]
+            p_base = prog.add_params(b, w.reshape(w.shape[0], -1).sum(1), L["in_zp"], scales, cb * N)
+            prog.instrs.append(Instr(Op.DWCONV, in_cb=cb, ksize=k, w_base=w_base, p_base=p_base,
+                                     rmode=RMODE["dwconv"], **common))
+        elif L["op"] in ("maxpool", "avgpool"):
+            assert out_g == cur["cb"]
+            op = Op.MAXPOOL if L["op"] == "maxpool" else Op.AVGPOOL
+            prog.instrs.append(Instr(op, in_cb=cur["cb"], ksize=L["k"], **common))
         else:
             raise NotImplementedError(L["op"])
 
-        cur = {"base": base, "h": oh, "w": ow, "cb": out_g, "c": oc}
-        prog.meta["layers"].append({"name": L["name"], "op": L["op"], "instr": len(prog.instrs) - 1, **cur})
+        cur = {"src": "act", "base": base, "h": oh, "w": ow, "c": oc, "cb": out_g,
+               "words": oh * ow * out_g}
+        prog.meta["layers"].append({"name": L["name"], "op": L["op"], "instr": len(prog.instrs) - 1,
+                                    **{k: cur[k] for k in ("base", "h", "w", "cb", "c")}})
 
     assert cur["h"] == cur["w"] == 1
     prog.instrs.append(Instr(Op.ARGMAX, in_base=cur["base"], in_w=cur["c"], comment="class = argmax"))
     prog.instrs.append(Instr(Op.END))
-    assert len(prog.instrs) <= isa.IMEM_DEPTH
+    assert len(prog.instrs) <= isa.IMEM_DEPTH, "program too long"
     prog.meta.update(w_used=prog.w_used, p_used=len(prog.pmem), n_instr=len(prog.instrs),
                      classes=cur["c"])
     return prog
@@ -160,8 +199,8 @@ def main():
     prog = compile_ir(*load_ir(args.model_dir))
     prog.write(args.out)
     print((args.out / "program.txt").read_text(), end="")
-    print(f"weights {prog.w_used}/{isa.W_DEPTH} words, params {len(prog.pmem)}/{isa.P_DEPTH}, "
-          f"instrs {len(prog.instrs)}/{isa.IMEM_DEPTH} -> {args.out}")
+    print(f"weights {prog.w_used}/{isa.W_DEPTH} words ({prog.w_used * 8 / 1024:.1f} KiB), "
+          f"params {len(prog.pmem)}/{isa.P_DEPTH}, instrs {len(prog.instrs)}/{isa.IMEM_DEPTH} -> {args.out}")
 
 
 if __name__ == "__main__":
