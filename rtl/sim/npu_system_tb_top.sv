@@ -41,7 +41,7 @@ module npu_system_tb_top #(
         .clk, .rst, .run, .uart_rx, .uart_tx,
         .spi_cs_n(cs_n), .spi_clk(sclk), .spi_mosi(mosi), .spi_miso(miso),
         .booted, .boot_err, .busy, .res_valid, .res_class, .res_score, .res_cycles, .res_count,
-        .thumb_raddr, .thumb_rdata,
+        .thumb_clk(clk), .thumb_raddr, .thumb_rdata,
         .sd_cke, .sd_cs_n, .sd_ras_n, .sd_cas_n, .sd_we_n, .sd_ba, .sd_addr, .sd_dqm,
         .sd_dq_o, .sd_dq_oe, .sd_dq_i(m_oe ? m_dq : 32'hDEAD_BEEF));
 

@@ -117,7 +117,7 @@ async def system_boot_and_uart(dut):
     dut._log.info(f"uart run: class {reply[1]} score {np.int8(reply[2])}, {rc} cycles")
 
 
-SOURCES = ["npu/npu_pkg.sv", "common/sdpram.sv", "npu/npu_pe.sv", "npu/npu_array.sv",
+SOURCES = ["npu/npu_pkg.sv", "common/sdpram.sv", "common/sdpram_dc.sv", "npu/npu_pe.sv", "npu/npu_array.sv",
            "npu/npu_requant.sv", "npu/npu_tile_engine.sv", "npu/npu_pool.sv", "npu/npu_core.sv",
            "common/spi_flash_reader.sv", "board/uart.sv", "board/sdram_ctrl.sv",
            "board/npu_system.sv", "sim/spi_flash_model.sv", "sim/sdram_model.sv",

@@ -53,7 +53,8 @@ module npu_system
     output      logic signed [7:0] res_score,
     output      logic [31:0] res_cycles,
     output      logic [15:0] res_count,     // inferences run
-    // thumbnail read port (1-cycle latency)
+    // thumbnail read port (own clock, 1-cycle latency)
+    input  wire logic        thumb_clk,
     input  wire logic [11:0] thumb_raddr,
     output      logic [3:0]  thumb_rdata,
     // SDRAM (EXT_SDRAM; dq split for simulation)
@@ -187,8 +188,9 @@ module npu_system
     logic [3:0]  t_wdata;
     logic        s_done;                    // in_words words written (pulse)
 
-    sdpram #(.W(4), .D(TN * TN)) u_thumb (
-        .clk, .we(t_we), .waddr(t_ptr), .wdata(t_wdata), .raddr(thumb_raddr), .rdata(thumb_rdata));
+    sdpram_dc #(.W(4), .D(TN * TN)) u_thumb (
+        .wclk(clk), .we(t_we), .waddr(t_ptr), .wdata(t_wdata),
+        .rclk(thumb_clk), .raddr(thumb_raddr), .rdata(thumb_rdata));
 
     always_comb begin
         logic [9:0] acc;

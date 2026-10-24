@@ -149,6 +149,15 @@ vww01, and board power from a USB power meter (energy per inference).
   DFF 8,263 (53%), BSRAM 43/46, DSP 64 MULT9 + 2 MULT36, LUT RAM 74. **Fmax 63.3 MHz**
   post-route (target 25.2). VWW 264,036 cycles = 10.5 ms @ 25.2 MHz, 4.2 ms at 63 MHz.
   Next: board top (flash loader, run, LEDs/HDMI), then clock up with a PLL.
+- **Board design (2026-10-24):** npu_board_top = npu_system (flash boot loader, weights
+  copied into the in-package SDRAM, UART image upload, 48x48 thumbnail) + HDMI overlay
+  (thumbnail x8, verdict, score, latency, runs). NPU/SDRAM/flash/UART at 54 MHz (second
+  rPLL), HDMI at 25.2 MHz (status crosses by toggle handshake, thumbnail in a dual-clock
+  BRAM). Array now row-skew only (conv drain 38 -> 34 cycles/job). Board build: LUT4 76%,
+  DFF 56%, BSRAM 45/46; **post-route 64.4 MHz (target 54)**. VWW in the system
+  simulation: 272,862 cycles from SDRAM (5.05 ms at 54 MHz) vs 4.23M over 1-bit flash.
+  Not yet run on hardware: SDRAM read latency is calibrated at boot; flash/UART pins taken
+  from community constraint files.
 
 ## Milestones
 

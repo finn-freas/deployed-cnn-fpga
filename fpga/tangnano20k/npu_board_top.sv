@@ -4,6 +4,7 @@
 //     the program and a demo image, and runs one inference
 //   * S1 resets; S2 reloads the demo image and runs again
 //   * USB-UART (1 Mbaud): send images, get class/score/cycles back (sw/board/demo.py)
+//   * clocks: NPU/SDRAM/flash/UART at 54 MHz, HDMI at 25.2 MHz
 //   * HDMI 640x480: thumbnail of the input, verdict, score, latency, run count
 //   * LEDs (active-low): 0 person, 1 no person, 2 busy, 3 booted, 4 flash error, 5 heartbeat
 //
@@ -38,13 +39,16 @@ module npu_board_top (
     output      logic [1:0]  O_sdram_ba,
     inout  wire logic [31:0] IO_sdram_dq
 );
-    localparam int CLK_HZ = 25_200_000;
+    localparam int CLK_HZ = 54_000_000;     // NPU, SDRAM, flash, UART (gw_pll_sys)
 
-    logic clk_tmds, clk, locked, rst;
-    gw_clk_gen u_clk (.clk_27, .clk_tmds, .clk_pix(clk), .locked);
-    reset_sync u_rst (.clk, .rst_async_in(!locked || btn_s1), .rst_out(rst));
+    // clocks: clk (54 MHz) for the system, clk_pix (25.2 MHz) and clk_tmds for HDMI
+    logic clk, clk_pix, clk_tmds, lock_s, lock_p, rst, rst_pix;
+    gw_pll_sys u_pll (.clk_27, .clk_sys(clk), .locked(lock_s));
+    gw_clk_gen u_clk (.clk_27, .clk_tmds, .clk_pix, .locked(lock_p));
+    reset_sync u_rst (.clk, .rst_async_in(!lock_s || btn_s1), .rst_out(rst));
+    reset_sync u_rstp (.clk(clk_pix), .rst_async_in(!lock_p || btn_s1), .rst_out(rst_pix));
 
-    // S2: synchronise, debounce (~10 ms), one pulse per press
+    // S2: synchronise, debounce (~5 ms), one pulse per press
     logic [1:0]  s2_sync;
     logic [17:0] s2_cnt;
     logic        s2_state, run;
@@ -64,6 +68,7 @@ module npu_board_top (
         end
     end
 
+    // ---- system (clk)
     logic        booted, boot_err, busy, res_valid;
     logic [7:0]  res_class;
     logic signed [7:0] res_score;
@@ -81,28 +86,43 @@ module npu_board_top (
         .clk, .rst, .run, .uart_rx, .uart_tx,
         .spi_cs_n(flash_cs_n), .spi_clk(flash_clk), .spi_mosi(flash_mosi), .spi_miso(flash_miso),
         .booted, .boot_err, .busy, .res_valid, .res_class, .res_score, .res_cycles, .res_count,
-        .thumb_raddr, .thumb_rdata,
+        .thumb_clk(clk_pix), .thumb_raddr, .thumb_rdata,
         .sd_cke(O_sdram_cke), .sd_cs_n(O_sdram_cs_n), .sd_ras_n(O_sdram_ras_n),
         .sd_cas_n(O_sdram_cas_n), .sd_we_n(O_sdram_wen_n), .sd_ba(O_sdram_ba),
         .sd_addr(O_sdram_addr), .sd_dqm(O_sdram_dqm), .sd_dq_o, .sd_dq_oe, .sd_dq_i(IO_sdram_dq));
 
+    // ---- display (clk_pix)
+    logic        p_booted, p_boot_err, p_busy, p_res_valid;
+    logic [7:0]  p_res_class, p_res_score;
+    logic [31:0] p_res_cycles;
+    logic [15:0] p_res_count;
+    status_cdc u_cdc (
+        .s_clk(clk), .s_rst(rst), .s_booted(booted), .s_boot_err(boot_err), .s_busy(busy),
+        .s_res_valid(res_valid), .s_res_class(res_class), .s_res_score(res_score),
+        .s_res_cycles(res_cycles), .s_res_count(res_count),
+        .d_clk(clk_pix), .d_rst(rst_pix), .d_booted(p_booted), .d_boot_err(p_boot_err),
+        .d_busy(p_busy), .d_res_valid(p_res_valid), .d_res_class(p_res_class),
+        .d_res_score(p_res_score), .d_res_cycles(p_res_cycles), .d_res_count(p_res_count));
+
     logic       de, hsync, vsync;
     logic [7:0] r, g, b;
     npu_display #(.NPU_HZ(CLK_HZ)) u_disp (
-        .clk, .rst, .booted, .boot_err, .busy, .res_valid, .res_class, .res_score, .res_cycles,
-        .res_count, .thumb_raddr, .thumb_rdata, .de, .hsync, .vsync, .r, .g, .b);
+        .clk(clk_pix), .rst(rst_pix), .booted(p_booted), .boot_err(p_boot_err), .busy(p_busy),
+        .res_valid(p_res_valid), .res_class(p_res_class), .res_score(p_res_score),
+        .res_cycles(p_res_cycles), .res_count(p_res_count),
+        .thumb_raddr, .thumb_rdata, .de, .hsync, .vsync, .r, .g, .b);
 
     logic [9:0] tmds [3];
-    dvi_tx u_dvi (.clk_pix(clk), .rst, .de, .hsync, .vsync, .r, .g, .b, .tmds);
-    gw_dvi_phy u_phy (.clk_pix(clk), .clk_tmds, .rst, .tmds({tmds[2], tmds[1], tmds[0]}),
+    dvi_tx u_dvi (.clk_pix, .rst(rst_pix), .de, .hsync, .vsync, .r, .g, .b, .tmds);
+    gw_dvi_phy u_phy (.clk_pix, .clk_tmds, .rst(rst_pix), .tmds({tmds[2], tmds[1], tmds[0]}),
                       .tmds_clk_p, .tmds_clk_n, .tmds_d_p, .tmds_d_n);
 
-    logic [24:0] hb;
-    always_ff @(posedge clk) hb <= hb + 25'd1;
+    logic [25:0] hb;
+    always_ff @(posedge clk) hb <= hb + 26'd1;
 
     logic person;
     assign person = res_valid && res_class == 8'd1;
-    assign led_n = ~{hb[24], boot_err, booted, busy, res_valid && !person, person};
+    assign led_n = ~{hb[25], boot_err, booted, busy, res_valid && !person, person};
 
 endmodule
 
