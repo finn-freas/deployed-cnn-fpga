@@ -7,9 +7,10 @@
 // value moves each PE's finished sum into its shadow register as it passes, and the next
 // group can follow right behind it: no flush is needed.
 //
-// Depthwise mode (dw = 1) bypasses the systolic paths: every PE takes its operands and
-// valid/last straight from the dw_* inputs in the same cycle, PE(r,c) multiplying byte c
-// of dw_a[r] by byte c of dw_b (r = output pixel, c = channel lane).
+// Depthwise mode (dw = 1; PE(r,c) = output pixel r x channel lane c): only the row skew
+// remains. Valid/last reach every PE of row r at once (r cycles after injection), B moves
+// down without the column skew, and every PE takes byte c of the one activation word dw_a
+// in that cycle, so row r works r cycles after row 0 on whatever word is then on dw_a.
 
 `default_nettype none
 
@@ -23,10 +24,7 @@ module npu_array
     input  wire logic signed [DATA_W-1:0] a [N],   // a[r]: row r operand
     input  wire logic signed [DATA_W-1:0] b [N],   // b[c]: column c operand
     input  wire logic                     dw,
-    input  wire logic                     dw_valid,
-    input  wire logic                     dw_last,
-    input  wire logic [WORD_W-1:0]        dw_a [N],
-    input  wire logic [WORD_W-1:0]        dw_b,
+    input  wire logic [WORD_W-1:0]        dw_a,      // depthwise: activation word, all rows
     output      logic signed [ACC_W-1:0]  shadow [N][N]
 );
 
@@ -60,7 +58,7 @@ module npu_array
                 end
             end
             assign a_sk[i] = a_d[i-1];
-            assign b_sk[i] = b_d[i-1];
+            assign b_sk[i] = dw ? b[i] : b_d[i-1];      // depthwise: no column skew
             assign v_sk[i] = v_d[i-1];
             assign l_sk[i] = l_d[i-1];
         end
@@ -85,10 +83,10 @@ module npu_array
         for (genvar c = 0; c < N; c++) begin : g_c
             npu_pe u_pe (
                 .clk, .rst,
-                .v_in  (dw ? dw_valid : v_h[r][c]),
-                .l_in  (dw ? dw_last : l_h[r][c]),
-                .a_in  (dw ? DATA_W'(dw_a[r] >> (DATA_W * c)) : a_h[r][c]),
-                .b_in  (dw ? DATA_W'(dw_b >> (DATA_W * c)) : b_v[r][c]),
+                .v_in  (dw ? v_h[r][0] : v_h[r][c]),
+                .l_in  (dw ? l_h[r][0] : l_h[r][c]),
+                .a_in  (dw ? DATA_W'(dw_a >> (DATA_W * c)) : a_h[r][c]),
+                .b_in  (b_v[r][c]),
                 .v_out (v_h[r][c+1]),
                 .l_out (l_h[r][c+1]),
                 .a_out (a_h[r][c+1]),

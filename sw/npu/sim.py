@@ -26,11 +26,11 @@ GATHER_TAIL_WORD = 2 + N           # last word lands, transposer writes its N co
 DRAIN_DELAY = N // 2 + 1           # npu_tile_engine: capture -> first shadow read (2 requants)
 PERIOD_MIN = DRAIN_DELAY + N * N // 2 + 1  # min cycles between injections
 DRAIN_DONE = DRAIN_DELAY + N * N // 2 + 4 + 2   # capture -> drain + requant pipeline empty
-# depthwise mode: no skew, so the drain starts right after the capture
+# depthwise mode: no column skew, so the drain starts right after the capture
 DRAIN_DELAY_DW = 1
 PERIOD_DW = DRAIN_DELAY_DW + N * N // 2 + 1
 DRAIN_DONE_DW = DRAIN_DELAY_DW + N * N // 2 + 4 + 2
-DW_MAX_K = 3                       # depthwise line: SEG = 7*stride + 3 words per kernel row
+DW_K = (2, 3)                      # depthwise unit kernel sizes (SEG = 7*stride + 3 words per row)
 POOL_INIT = 1 + 7                  # npu_pool: S_INIT + shift-and-add of in_w * in_cb
 
 # External store (rtl/sim/ext_mem_model.sv defaults, as instantiated by npu_sim_top)
@@ -108,16 +108,18 @@ def tile_engine_cycles(*, K: int, G: int, tiles: int, gather_issue: int, gather_
 def dw_engine_cycles(*, ksize: int, stride: int, units: int, param_words: int,
                      weight_words: int) -> int:
     """npu_tile_engine in depthwise mode: a unit (N pixels of an output row x one channel
-    block) streams ksize kernel rows of SEG words through the line, one word per cycle; its
-    first tap (the injection) comes SEG cycles after its first read, and injections are at
-    least PERIOD_DW apart. The drain takes the last unit with its last tap, ksize cycles
-    after its last read. (The previous instruction's last injection is always long past, so
-    the first unit starts at once.)"""
+    block) reads ksize kernel rows of SEG words, one per cycle, each tap issued with the read
+    of its word; its first read is its first tap (the injection), and injections are at least
+    PERIOD_DW apart. The drain takes the last unit with its last tap: word ksize-1 (stride 1)
+    or word 9 (stride 2, where the odd columns follow the even ones) of its last kernel row.
+    (The previous instruction's last injection is always long past, so the first unit starts
+    at once.)"""
     seg = 7 * stride + 3
     t = 1 + ext_load_cycles(param_words) + ext_load_cycles(weight_words)   # run_start seen
     period = max(ksize * seg, PERIOD_DW)
     t0_last = t + 1 + (units - 1) * period            # last unit's first read
-    hand = t0_last + ksize * seg - 1 + ksize          # its last tap
+    last_word = ksize - 1 if stride == 1 else 9
+    hand = t0_last + (ksize - 1) * seg + last_word    # its last tap
     t = hand + DRAIN_DONE_DW + 1
     return t + INSTR_OVERHEAD - 1
 
@@ -278,7 +280,7 @@ class NpuSim:
         acc = np.einsum("ptgc,gtc->pgc", A, Wm)                                       # [P, cb, N]
         self._write_out(ins, self._requant(ins, acc, cb))
         # depthwise line datapath; the weights always fit the weight buffer (cached)
-        assert ins.ksize <= DW_MAX_K and ins.stride in (1, 2) and cb * T <= isa.WBUF_DEPTH
+        assert ins.ksize in DW_K and ins.stride in (1, 2) and cb * T <= isa.WBUF_DEPTH
         self.stats.cycles.append(dw_engine_cycles(
             ksize=ins.ksize, stride=ins.stride, units=cb * ins.out_h * -(-ins.out_w // N),
             param_words=cb * N * isa.PARAM_WORDS, weight_words=cb * T))

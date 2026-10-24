@@ -77,7 +77,6 @@ module npu_tile_engine
     localparam int DRAIN_DELAY_DW = 1;
     localparam int PERIOD_DW      = DRAIN_DELAY_DW + N * N / 2 + 1;
     localparam int DQ             = RQ_LAT + 1;      // drain issue -> requant output
-    localparam int LINE           = 7 * 2 + 3;       // depthwise line: SEG for stride 2
 
     // ---------------------------------------------------------------- main FSM
     typedef enum logic [3:0] {
@@ -343,37 +342,42 @@ module npu_tile_engine
     logic signed [19:0] e_addr, e_row;
     logic        rd_inb, rd_go, dd_pad;
     logic        u_set;             // param set of the unit being read
-    logic [LINE-1:0][WORD_W-1:0] dl;                 // the line (packed: plain flip-flops)
-    // taps of a kernel row whose words have all been read: tk_cnt taps from the next cycle
-    logic [2:0]  tk_cnt;
-    logic [1:0]  tk_kx;
-    logic        tk_first, tk_last; // the unit's first / last kernel row
-    logic [9:0]  tk_wi;             // weight buffer address of the next tap
-    logic [12:0] tk_ob;
-    logic [3:0]  tk_nval;
-    logic        tk_set;
-    logic        dw_vq, dw_lq;                      // registered array controls
-    logic        dw_tap_first, dw_tap_last;
-    logic [WORD_W-1:0] dw_a [N];
+    logic [9:0]  w_row, e_w;        // weight buffer address of kernel row rd_ky's taps
+    // taps: the read of word rd_j of a kernel row issues tap kx (if any) in the same cycle
+    logic        dw_tap, dw_tap_first, dw_tap_last;
+    logic [1:0]  dw_kx;
+    logic [WORD_W-1:0] dw_a;
     always_comb begin
         ustart = (rd_j == 0) && (rd_ky == 0);
         e_iy   = ustart ? u_iy0 : rd_iy;
         e_ix   = ustart ? u_ix0 : rd_ix;
         e_addr = ustart ? u_base : rd_addr;
         e_row  = ustart ? u_base : rd_row;
+        e_w    = ustart ? cb_wb : w_row;
         rd_inb = e_iy >= 0 && e_iy < 10'(I.in_h) && e_ix >= 0 && e_ix < 10'(I.in_w);
-        // a unit starts only if its first tap (SEG cycles later) is PERIOD_DW after the last
-        // injection, which may be the previous unit's first tap in this very cycle (ksize 1)
-        dw_tap_first = (tk_cnt != 0) && tk_first && (tk_kx == 0);
-        dw_tap_last  = (tk_cnt == 3'd1) && tk_last;
-        rd_go  = !ustart || (dw_more && !dw_tap_first && 9'(since_inj) + 9'(seg_m1) >= 9'(PERIOD_DW - 2));
+        // a unit's first read is also its first tap (injection): PERIOD_DW after the last
+        rd_go  = !ustart || (dw_more && since_inj >= 8'(PERIOD_DW - 1));
+        // stride 1 reads columns 0..9 in order: tap kx = word kx. Stride 2 reads the even
+        // columns 0,2..16 then the odd ones 1..15: kx 0 = word 0, kx 2 = word 1, kx 1 = word 9.
+        if (!dw_s2) begin
+            dw_tap = (rd_j < 5'(I.ksize));
+            dw_kx  = 2'(rd_j);
+            dw_tap_last = (rd_j == 5'(I.ksize - 3'd1));
+        end else begin
+            dw_tap = (rd_j == 0) || (rd_j == 1 && I.ksize == 3'd3) || (rd_j == 9 && I.ksize >= 3'd2);
+            dw_kx  = (rd_j == 0) ? 2'd0 : (rd_j == 1) ? 2'd2 : 2'd1;
+            dw_tap_last = (I.ksize == 3'd1) ? (rd_j == 0) : (rd_j == 9);
+        end
+        dw_tap       = (dstate == D_RUN) && rd_go && dw_tap;
+        dw_tap_last  = dw_tap && dw_tap_last && (rd_ky == 3'(I.ksize - 3'd1));
+        dw_tap_first = dw_tap && ustart;
         u_nval = (I.out_w - dw_x0 >= 7'(N)) ? 4'(N) : 4'(I.out_w - dw_x0);
-        for (int r = 0; r < N; r++) dw_a[r] = dw_s2 ? dl[2 * r] : dl[r];
+        // the word read last cycle: row r of the array uses it r cycles after row 0
+        dw_a   = dd_pad ? {N{I.in_zp}} : act_rdata;
     end
 
     npu_array u_array (.clk, .rst, .valid(st_valid), .last(st_last), .a(arr_a), .b(arr_b),
-                       .dw(is_dw), .dw_valid(dw_vq), .dw_last(dw_lq), .dw_a, .dw_b(wb_rdata),
-                       .shadow(arr_shadow));
+                       .dw(is_dw), .dw_a, .shadow(arr_shadow));
 
     // ---------------------------------------------------------------- drain (concurrent)
     logic        dr_busy, dr_run;
@@ -426,7 +430,7 @@ module npu_tile_engine
         if (is_dw)        act_raddr = ACT_AW'(e_addr);
         else if (pk_mode) act_raddr = ACT_AW'((g_addr >>> 3) + 20'(ph));
         else              act_raddr = ACT_AW'(g_addr);
-        if (is_dw)        wb_raddr = tk_wi;
+        if (is_dw)        wb_raddr = e_w + WBUF_AW'(dw_kx);
         else if (!cached) wb_raddr = wdbl ? {c_g[0], (WBUF_AW-1)'(sk)} : WBUF_AW'(sk);   // group mode
         else              wb_raddr = c_wb + WBUF_AW'(sk);
         at_raddr = {sbuf, KA_AW'(sk)};
@@ -449,8 +453,6 @@ module npu_tile_engine
         d_v       <= 1'b0;
         st_valid  <= 1'b0;
         st_last   <= 1'b0;
-        dw_vq     <= 1'b0;
-        dw_lq     <= 1'b0;
         if (since_inj != 8'hFF) since_inj <= since_inj + 8'd1;
 
         // ---- instruction constants: shift-and-add steps, then the derived ones
@@ -496,18 +498,11 @@ module npu_tile_engine
             if (wo_cnt == 3'(N - 1)) wo_active <= 1'b0;
         end
 
-        // ---- depthwise line: shifts every cycle; the word read last cycle enters at SEG-1
-        for (int j = 0; j < LINE - 1; j++) dl[j] <= dl[j + 1];
-        dl[LINE - 1] <= dd_pad ? {N{I.in_zp}} : act_rdata;
-        if (!dw_s2) dl[7 + 2] <= dd_pad ? {N{I.in_zp}} : act_rdata;     // SEG-1 for stride 1
-
-        // ---- depthwise taps: one per cycle, weights read one cycle ahead of the array
-        if (tk_cnt != 0) begin
-            dw_vq  <= 1'b1;
-            dw_lq  <= dw_tap_last;
-            tk_cnt <= tk_cnt - 3'd1;
-            tk_kx  <= tk_kx + 2'd1;
-            tk_wi  <= tk_wi + 10'd1;
+        // ---- depthwise taps: issued with the read whose word they use (it reaches the
+        // array with the weight, one cycle later)
+        if (dw_tap) begin
+            st_valid <= 1'b1;
+            st_last  <= dw_tap_last;
         end
 
         // ---- external load data
@@ -537,9 +532,9 @@ module npu_tile_engine
             dr_wait <= is_dw ? 3'(DRAIN_DELAY_DW - 1) : 3'(DRAIN_DELAY - 1);
             dr_run  <= 1'b0;
             if (is_dw) begin
-                dr_ob   <= tk_ob;
-                dr_nval <= tk_nval;
-                rset    <= tk_set;
+                dr_ob   <= u_ob;
+                dr_nval <= u_nval;
+                rset    <= u_set;
             end else begin
                 dr_ob   <= c_ob + 13'(c_g);
                 dr_nval <= (P - c_p0 >= 14'(N)) ? 4'(N) : 4'(P - c_p0);
@@ -602,7 +597,6 @@ module npu_tile_engine
             pf_j       <= 4'(N);
             full       <= '0;
             m_cnt      <= '0;
-            tk_cnt     <= '0;
             dd_pad     <= 1'b0;
             is_dw      <= 1'b0;
             wset       <= 1'b0;
@@ -936,19 +930,10 @@ module npu_tile_engine
                     if (rd_go) begin
                         dd_pad <= !rd_inb;
                         if (rd_j == seg_m1) begin
-                            // kernel row complete: its taps issue from the next cycle
-                            tk_cnt   <= 3'(I.ksize);
-                            tk_kx    <= '0;
-                            tk_first <= (rd_ky == 0);
-                            tk_last  <= (rd_ky == 3'(I.ksize - 3'd1));
-                            if (rd_ky == 0) begin
-                                tk_wi   <= cb_wb;
-                                tk_ob   <= u_ob;
-                                tk_nval <= u_nval;
-                                tk_set  <= u_set;
-                            end
+                            // kernel row complete
                             rd_j  <= '0;
                             rd_ix <= u_ix0;
+                            w_row <= e_w + 10'(I.ksize);
                             if (rd_ky == 3'(I.ksize - 3'd1)) begin
                                 rd_ky <= '0;
                                 // next unit: segment, then row, then channel block
@@ -988,19 +973,29 @@ module npu_tile_engine
                                 rd_addr <= e_row + 20'(RS);
                             end
                         end else begin
-                            rd_j    <= rd_j + 5'd1;
-                            rd_ix   <= e_ix + 10'sd1;
-                            rd_addr <= e_addr + 20'(I.in_cb);
+                            // next column: stride 1 in order; stride 2 evens, then odds
+                            rd_j <= rd_j + 5'd1;
+                            if (!dw_s2) begin
+                                rd_ix   <= e_ix + 10'sd1;
+                                rd_addr <= e_addr + 20'(I.in_cb);
+                            end else if (rd_j == 5'd8) begin
+                                rd_ix   <= u_ix0 + 10'sd1;
+                                rd_addr <= e_row + 20'(I.in_cb);
+                            end else begin
+                                rd_ix   <= e_ix + 10'sd2;
+                                rd_addr <= e_addr + 20'({I.in_cb, 1'b0});
+                            end
                             if (ustart) begin
                                 rd_iy  <= e_iy;
                                 rd_row <= e_row;
+                                w_row  <= e_w;
                             end
                         end
                     end
                 end
 
-                // after the last read: the last taps
-                D_TAIL: if (tk_cnt == 0) dstate <= D_DONE;
+                // (every tap issued with its read)
+                D_TAIL: dstate <= D_DONE;
 
                 D_DONE: if (state == S_FINISH) dstate <= D_IDLE;
 

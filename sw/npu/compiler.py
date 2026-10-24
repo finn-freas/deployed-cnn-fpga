@@ -142,7 +142,16 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
                          "INSTR_W": isa.INSTR_W},
                  "softmax_dropped": bool(ir["output"].get("softmax_dropped"))}
 
+    arrays = dict(arrays)
     for L in ir["layers"]:
+        if L["op"] == "dwconv" and L["kh"] == 1:
+            # 1x1 depthwise = 1x1 CONV with a diagonal weight matrix (the depthwise unit needs
+            # k >= 2: its first and last taps must be a kernel row apart)
+            w = arrays[L["name"] + ".w"]
+            wd = np.zeros((w.shape[0], 1, 1, w.shape[0]), w.dtype)
+            wd[np.arange(w.shape[0]), 0, 0, np.arange(w.shape[0])] = w.reshape(-1)
+            arrays[L["name"] + ".w"] = wd
+            L = dict(L, op="conv")
         ih, iw, ic = L["in_shape"]
         oh, ow, oc = L["out_shape"]
         assert (ih, iw, ic) == (cur["h"], cur["w"], cur["c"]), f"{L['name']}: shape chain"
@@ -193,8 +202,8 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
             k = L["kh"]
             cb = cur["cb"]
             assert out_g == cb
-            if k > 3 or L["stride"] not in (1, 2):
-                raise NotImplementedError(f"{L['name']}: the depthwise unit supports k <= 3, stride 1/2")
+            if not 2 <= k <= 3 or L["stride"] not in (1, 2):
+                raise NotImplementedError(f"{L['name']}: the depthwise unit supports k 2..3, stride 1/2")
             w = arrays[L["name"] + ".w"].astype(np.int64)          # [C, k, k]
             b = arrays[L["name"] + ".b"].astype(np.int64)
             w_scale = arrays[L["name"] + ".w_scale"]
@@ -219,7 +228,7 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
                 and (ow - 1) * L["stride"] + k <= iw
             stride = 1 if oh == ow == 1 else L["stride"]
             mq = avgpool_multiplier(n) if inside else None
-            if mq is None or k > 3 or stride not in (1, 2):
+            if mq is None or not 2 <= k <= 3 or stride not in (1, 2):
                 raise NotImplementedError(f"{L['name']}: AVGPOOL needs a {k}x{k} window inside the "
                                           f"input, k <= 3, stride 1/2 (or 1x1 output) and odd k*k")
             w_base = prog.add_weights(np.ones((cb * n, N), np.int64), L["name"])
