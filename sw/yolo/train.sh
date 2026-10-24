@@ -2,6 +2,8 @@
 # Train YOLOv5n-ReLU at 320x320 on the trash dataset (run from the repo root).
 #   sw/yolo/train.sh <path/to/data.yaml> [epochs]
 # Hyperparameters follow the author's original YOLOv5s run (Trash_Detection/Hyp.yaml).
+# Initialized from COCO-pretrained yolov5n.pt: layer shapes match exactly and only the
+# activation differs (SiLU -> ReLU), so fine-tuning converges far faster than scratch.
 set -euo pipefail
 
 DATA=$(realpath "$1")
@@ -15,7 +17,7 @@ cd build/yolov5
     --epochs "$EPOCHS" \
     --data "$DATA" \
     --cfg "$ROOT/sw/yolo/yolov5n-relu.yaml" \
-    --weights '' \
+    --weights yolov5n.pt \
     --hyp "$ROOT/sw/yolo/hyp_trash.yaml" \
     --project "$ROOT/build/yolo_runs" \
     --name yolov5n_relu_320 \
