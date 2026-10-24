@@ -1,7 +1,0 @@
-source /home/finnf/oss-cad-suite/environment && yosys -m slang -q -l build/npu_probe_top_nolr/yosys.log -p "\
-	read_verilog -sv ../../rtl/gowin/gw_clk_gen.sv ../../rtl/gowin/gw_dvi_phy.sv; \
-	read_slang --top npu_probe_top ../../rtl/npu/npu_pkg.sv ../../rtl/common/sdpram.sv ../../rtl/npu/npu_pe.sv ../../rtl/npu/npu_array.sv ../../rtl/npu/npu_requant.sv ../../rtl/npu/npu_tile_engine.sv ../../rtl/npu/npu_pool.sv ../../rtl/npu/npu_core.sv npu_probe_top.sv; \
-	synth_gowin -top npu_probe_top -family gw2a -nolutram -json build/npu_probe_top_nolr/npu_probe_top-synth.json"
-source /home/finnf/oss-cad-suite/environment && nextpnr-himbaechel --json build/npu_probe_top_nolr/npu_probe_top-synth.json --write build/npu_probe_top_nolr/npu_probe_top-pnr.json --device GW2AR-LV18QN88C8/I7 \
-	--vopt family=GW2A-18C --vopt cst=tangnano20k.cst --report build/npu_probe_top_nolr/report.json \
-	--freq 25.2 --threads 8 -l build/npu_probe_top_nolr/nextpnr.log --quiet

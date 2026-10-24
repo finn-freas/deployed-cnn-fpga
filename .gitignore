@@ -14,3 +14,4 @@ results.xml
 build/
 *.fs
 *.json.pnr
+fpga/tangnano20k/build_*.log
