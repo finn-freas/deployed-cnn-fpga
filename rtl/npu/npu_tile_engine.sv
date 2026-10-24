@@ -130,8 +130,10 @@ module npu_tile_engine
     logic [2:0]  d_r, d_lane;
     logic [KA_AW-1:0] d_k;
 
-    // word mode: double-buffered transposer
-    logic [WORD_W-1:0] tb [2][N];
+    // word mode: double-buffered transposer. Packed array on purpose: it is read N ways at
+    // once (one column of bytes per cycle), so as an unpacked array synthesis would infer a
+    // multi-port LUT RAM and replicate it per read port; as a vector it is plain flip-flops.
+    logic [1:0][N-1:0][WORD_W-1:0] tb;
     logic        tb_sel;            // buffer being filled
     logic        wo_active, wo_buf;
     logic [2:0]  wo_cnt;
