@@ -2,7 +2,7 @@
 
 **Created:** 2026-10-23
 **Author:** GateFlow Planner
-**Status:** Draft (supersedes `transformer_accel.md`)
+**Status:** Superseded by [`yolo_trash_npu.md`](yolo_trash_npu.md). Phases 0–1 are complete and reused there.
 
 ## Overview
 
