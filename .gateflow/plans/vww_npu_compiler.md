@@ -97,6 +97,16 @@ vww01, and board power from a USB power meter (energy per inference).
   550,776 cycles = 21.9 ms @ 25.2 MHz, 21.3% MAC utilization. Time split: pointwise 57.6%
   (30.5% util, drain-bound), depthwise 31.5% (7.2% util), packed first conv 10.7%.
   So the optimization order is O1 (depthwise), then O3 (overlap the drain), then O2.
+- **V2 done (2026-10-23):** NPU core RTL (array, requant, tile engine, pool, sequencer).
+  Requant is bit-exact on 100K random vectors. The core runs MNIST (5/5 layers) and VWW
+  (29/29 layers) bit-exact vs TFLite in Verilator, step-mode checked layer by layer.
+  Measured v1 latency: **VWW 832,611 cycles = 33.0 ms @ 25.2 MHz, 14.1% MAC utilization**.
+  The simulator's cycle model now matches the RTL exactly (asserted in test_npu_core).
+  **Synthesis probe (GW2AR-18):** logic ≈27% LUT, ≈36% FF, DSP ≈44/48 fit; **BSRAM needs
+  79 of 46 blocks.** The big consumers are activation memory (8K × 64b), the 27 KB input
+  buffer, and the 8 A-banks (64-bit wide × 128 deep, so 2 blocks each). V3 must restructure
+  memory: byte-wide or transposed A-banks, tighter activation allocation / fusion, and the
+  input and weights moved to SDRAM- or flash-backed streaming.
 
 ## Milestones
 
