@@ -32,7 +32,8 @@ module npu_system
     parameter logic [23:0] FLASH_BASE = 24'h40_0000,
     parameter int          BOOT_W     = 'h10000,
     parameter int          SPI_DIV    = 1,
-    parameter bit          EXT_SDRAM  = 1'b0
+    parameter bit          EXT_SDRAM  = 1'b0,
+    parameter bit          HAS_POOL   = 1'b1
 ) (
     input  wire logic        clk,
     input  wire logic        rst,
@@ -94,7 +95,7 @@ module npu_system
     logic [WORD_W-1:0] c_dbg;
     /* verilator lint_on UNUSEDSIGNAL */
 
-    npu_core u_core (
+    npu_core #(.HAS_POOL(HAS_POOL)) u_core (
         .clk, .rst, .start(c_start), .step_mode(1'b0), .resume(1'b0),
         .busy(c_busy), .paused(c_paused), .done(c_done), .pc(c_pc),
         .result_class(c_class), .result_score(c_score), .cycles(c_cycles), .instr_cycles(c_icycles),
@@ -122,7 +123,7 @@ module npu_system
     // SDRAM: written by the boot copy, read by the core
     /* verilator lint_off UNUSEDSIGNAL */  // half of these are unused in each configuration
     logic        m_ready, m_cal_err, m_rd_ack, m_rvalid, m_wr_req, m_wr_ack;
-    logic [63:0] m_rdata, m_wr_data;
+    logic [63:0] m_rdata;
     logic [16:0] m_wr_addr;
     logic [31:0] ext_words;
     /* verilator lint_on UNUSEDSIGNAL */
@@ -132,7 +133,7 @@ module npu_system
             .clk, .rst, .ready(m_ready), .cal_err(m_cal_err),
             .rd_req(e_req && !ld_own), .rd_addr(17'(e_addr)), .rd_len(e_len), .rd_ack(m_rd_ack),
             .rvalid(m_rvalid), .rdata(m_rdata),
-            .wr_req(m_wr_req), .wr_addr(m_wr_addr), .wr_data(m_wr_data), .wr_ack(m_wr_ack),
+            .wr_req(m_wr_req), .wr_addr(m_wr_addr), .wr_data(r_rdata), .wr_ack(m_wr_ack),
             .sd_cke, .sd_cs_n, .sd_ras_n, .sd_cas_n, .sd_we_n, .sd_ba, .sd_addr, .sd_dqm,
             .sd_dq_o, .sd_dq_oe, .sd_dq_i);
         always_comb begin
@@ -236,9 +237,8 @@ module npu_system
     bstate_e bs;
     logic [15:0] prog_words;
     logic        hdr2;                      // header word 1 is next
-    logic [63:0] w_buf;                     // flash word being unpacked
-    logic [2:0]  u_byte;                    // byte of w_buf to feed (flash image)
-    logic        u_v;                       // w_buf holds bytes to feed
+    logic [2:0]  u_byte;                    // byte of the flash word to feed (image)
+    logic        u_v;                       // bytes of the flash word left to feed
     logic [15:0] beat;                      // next instruction beat
     logic        hi_beat;                   // writing the word's second beat
     logic        reply;                     // send a UART reply when the run finishes
@@ -260,7 +260,7 @@ module npu_system
             h_we    = 1'b1;
             h_sel   = 3'd0;
             h_addr  = beat;
-            h_wdata = 64'(hi_beat ? w_buf[63:32] : w_buf[31:0]);
+            h_wdata = 64'(hi_beat ? r_rdata[63:32] : r_rdata[31:0]);   // reader holds the word
         end else if (s_wr) begin
             h_we    = 1'b1;
             h_sel   = 3'd2;
@@ -269,7 +269,7 @@ module npu_system
         end
         // the image byte stream: flash words byte by byte, or UART bytes
         s_v = (bs == B_IMG_BYTES && u_v) || (bs == B_UART_IMG && rx_v);
-        s_d = (bs == B_UART_IMG) ? rx_d : w_buf[8 * u_byte +: 8];
+        s_d = (bs == B_UART_IMG) ? rx_d : r_rdata[8 * u_byte +: 8];   // reader holds the word
         tx_v = (tx_idx != 0) && tx_rdy;
         tx_d = tx_msg[7:0];
     end
@@ -342,10 +342,7 @@ module npu_system
 
                 B_COPY: begin
                     if (b_req && r_ack) b_req <= 1'b0;
-                    if (r_rvalid) begin                 // flash words are >100 cycles apart
-                        m_wr_req  <= 1'b1;
-                        m_wr_data <= r_rdata;
-                    end
+                    if (r_rvalid) m_wr_req <= 1'b1;     // flash words are >100 cycles apart
                     if (m_wr_req && m_wr_ack) begin
                         m_wr_req  <= 1'b0;
                         m_wr_addr <= m_wr_addr + 17'd1;
@@ -365,7 +362,6 @@ module npu_system
                 B_PROG: begin
                     if (b_req && r_ack) b_req <= 1'b0;
                     if (r_rvalid) begin
-                        w_buf   <= r_rdata;
                         hi_beat <= 1'b0;
                         bs      <= B_PROG_WR;
                     end
@@ -394,7 +390,6 @@ module npu_system
                 B_IMG_BYTES: begin
                     if (b_req && r_ack) b_req <= 1'b0;
                     if (r_rvalid) begin
-                        w_buf  <= r_rdata;
                         u_byte <= '0;
                         u_v    <= 1'b1;
                     end else if (u_v) begin

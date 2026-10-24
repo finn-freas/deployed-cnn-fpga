@@ -31,7 +31,7 @@ module sdram_ctrl #(
     output      logic        rd_ack,
     output      logic        rvalid,
     output      logic [63:0] rdata,
-    // single-word writes
+    // single-word writes (wr_data held until the next request)
     input  wire logic        wr_req,
     input  wire logic [16:0] wr_addr,
     input  wire logic [63:0] wr_data,
@@ -93,11 +93,8 @@ module sdram_ctrl #(
     logic [2:0]  beat;
     logic        beat_v;
     logic [31:0] dq_q;                      // DQ sampled at our clock edge
+    logic [6:0]  wcol;                      // column bits of the write: {w[8:4], w[1:0]}
     logic [31:0] lo;                        // first beat of a word
-    /* verilator lint_off UNUSEDSIGNAL */
-    logic [16:0] wa;                        // write being performed (bank/row used at ACT)
-    /* verilator lint_on UNUSEDSIGNAL */
-    logic [63:0] wd;
 
     // beat valid and data at the selected latency
     always_comb begin
@@ -242,8 +239,7 @@ module sdram_ctrl #(
                         after   <= IDLE;
                         st      <= WAIT;
                     end else if (wr_ack) begin
-                        wa      <= wr_addr;
-                        wd      <= wr_data;
+                        wcol    <= {wr_addr[8:4], wr_addr[1:0]};
                         cmd     <= C_ACT;
                         sd_ba   <= wr_addr[3:2];
                         sd_addr <= 11'(wr_addr[16:9]);
@@ -275,8 +271,8 @@ module sdram_ctrl #(
                             st    <= WAIT;
                         end
                     end else begin
-                        sd_addr <= {3'b000, wa[8:4], wa[1:0], 1'b0};
-                        sd_dq_o <= wd[31:0];
+                        sd_addr <= {3'b000, wcol, 1'b0};
+                        sd_dq_o <= wr_data[31:0];
                         st      <= WR_HI;
                     end
                 end
@@ -284,8 +280,8 @@ module sdram_ctrl #(
                 WR_HI: begin
                     cmd      <= C_WR;
                     sd_dq_oe <= 1'b1;
-                    sd_addr  <= {3'b100, wa[8:4], wa[1:0], 1'b1};   // auto precharge
-                    sd_dq_o  <= wd[63:32];
+                    sd_addr  <= {3'b100, wcol, 1'b1};   // auto precharge
+                    sd_dq_o  <= wr_data[63:32];
                     wt       <= 16'(T_WR + T_RP + 1);
                     after    <= IDLE;
                     st       <= WAIT;

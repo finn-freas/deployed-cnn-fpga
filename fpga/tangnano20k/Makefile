@@ -21,7 +21,8 @@ FREQ_MHZ ?= 25.2
 # Everything else: read by yosys-slang (full SystemVerilog).
 VENDOR_SRCS := \
 	$(ROOT)/rtl/gowin/gw_clk_gen.sv \
-	$(ROOT)/rtl/gowin/gw_dvi_phy.sv
+	$(ROOT)/rtl/gowin/gw_dvi_phy.sv \
+	$(ROOT)/rtl/gowin/gw_sdram_clk.sv
 
 # Per-top source lists
 SRCS_colorbars_top := \
@@ -52,7 +53,7 @@ SRCS_memdp_probe_top := $(SRCS_dp_probe_top) $(ROOT)/rtl/common/sdpram.sv memdp_
 SRCS_npu_probe_small_top := $(NPU_SRCS) npu_probe_small_top.sv
 
 # The person detector: NPU + flash boot + UART + HDMI overlay
-SRCS_npu_board_top := $(NPU_SRCS) 	$(ROOT)/rtl/common/reset_sync.sv 	$(ROOT)/rtl/common/spi_flash_reader.sv 	$(ROOT)/rtl/board/uart.sv 	$(ROOT)/rtl/board/npu_system.sv 	$(ROOT)/rtl/board/bin2bcd.sv 	$(ROOT)/rtl/board/font_rom.sv 	$(ROOT)/rtl/board/npu_display.sv 	$(ROOT)/rtl/video/video_timing.sv 	$(ROOT)/rtl/video/tmds_encoder.sv 	$(ROOT)/rtl/video/dvi_tx.sv 	npu_board_top.sv
+SRCS_npu_board_top := $(NPU_SRCS) 	$(ROOT)/rtl/common/reset_sync.sv 	$(ROOT)/rtl/common/spi_flash_reader.sv 	$(ROOT)/rtl/board/uart.sv 	$(ROOT)/rtl/board/sdram_ctrl.sv 	$(ROOT)/rtl/board/npu_system.sv 	$(ROOT)/rtl/board/bin2bcd.sv 	$(ROOT)/rtl/board/font_rom.sv 	$(ROOT)/rtl/board/npu_display.sv 	$(ROOT)/rtl/video/video_timing.sv 	$(ROOT)/rtl/video/tmds_encoder.sv 	$(ROOT)/rtl/video/dvi_tx.sv 	npu_board_top.sv
 PACK_ARGS_npu_board_top := --mspi_as_gpio
 
 SRCS := $(SRCS_$(TOP))

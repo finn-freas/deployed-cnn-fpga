@@ -17,6 +17,7 @@ import numpy as np
 
 from . import isa
 from .compiler import compile_ir, load_ir
+from .isa import Op
 
 FLASH_BASE = 0x40_0000
 BOOT_W = 0x1_0000
@@ -63,8 +64,12 @@ def main():
     ap.add_argument("--image", type=Path, help="demo image (png/jpg/npy); default: golden image 0")
     ap.add_argument("--out", type=Path, default=Path("build/board/flash.bin"))
     ap.add_argument("--program", action="store_true", help="write it to the board's flash")
+    ap.add_argument("--pool", action="store_true",
+                    help="the bitstream has the MAXPOOL unit (npu_board_top is built without it)")
     args = ap.parse_args()
     prog = compile_ir(*load_ir(args.model_dir))
+    if not args.pool and any(i.op == Op.MAXPOOL for i in prog.instrs):
+        raise SystemExit("the model uses MAXPOOL, which this bitstream does not have (HAS_POOL=0)")
     m = prog.meta["input"]
     if args.image:
         img = load_image(args.image, m["h"], m["w"], m["c"])

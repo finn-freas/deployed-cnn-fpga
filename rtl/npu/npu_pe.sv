@@ -1,5 +1,5 @@
 // npu_pe: output-stationary MAC processing element with a shadow accumulator.
-// A, valid and last move right; B moves down; all registered. With the last value of a
+// B moves down (registered); A, valid and last come from the row. With the last value of a
 // group (v_in && l_in), the finished sum acc + a*b goes to `shadow` and the accumulator
 // restarts from zero, so the array never stops to drain.
 //
@@ -17,9 +17,6 @@ module npu_pe
     input  wire logic                     l_in,    // last value of a group (with v_in)
     input  wire logic signed [DATA_W-1:0] a_in,
     input  wire logic signed [DATA_W-1:0] b_in,
-    output      logic                     v_out,
-    output      logic                     l_out,
-    output      logic signed [DATA_W-1:0] a_out,
     output      logic signed [DATA_W-1:0] b_out,
     output      logic signed [ACC_W-1:0]  shadow   // result of the last finished group
 );
@@ -35,10 +32,7 @@ module npu_pe
         if (rst)       acc <= '0;
         else if (v_in) acc <= l_in ? '0 : sum;
         if (v_in && l_in) shadow <= sum;
-        a_out <= a_in;
         b_out <= b_in;
-        v_out <= v_in;
-        l_out <= l_in;
     end
 
 endmodule

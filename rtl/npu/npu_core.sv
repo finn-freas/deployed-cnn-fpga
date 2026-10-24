@@ -13,7 +13,8 @@
 module npu_core
     import npu_pkg::*;
 #(
-    parameter int ACT_MEM = ACT_DEPTH   // physical activation words (probes may shrink it)
+    parameter int ACT_MEM  = ACT_DEPTH, // physical activation words (probes may shrink it)
+    parameter bit HAS_POOL = 1'b1       // 0: no MAXPOOL unit (the instruction then does nothing)
 ) (
     input  wire logic                clk,
     input  wire logic                rst,
@@ -98,10 +99,19 @@ module npu_core
         .act_raddr(t_act_raddr), .act_rdata, .act_we(t_act_we), .act_waddr(t_act_waddr),
         .act_wdata(t_act_wdata), .ext_req, .ext_addr, .ext_len, .ext_ack, .ext_rvalid, .ext_rdata);
 
-    npu_pool u_pool (
-        .clk, .rst, .start(pool_start), .ins, .done(pool_done),
-        .act_raddr(p_act_raddr), .act_rdata, .act_we(p_act_we), .act_waddr(p_act_waddr),
-        .act_wdata(p_act_wdata));
+    if (HAS_POOL) begin : g_pool
+        npu_pool u_pool (
+            .clk, .rst, .start(pool_start), .ins, .done(pool_done),
+            .act_raddr(p_act_raddr), .act_rdata, .act_we(p_act_we), .act_waddr(p_act_waddr),
+            .act_wdata(p_act_wdata));
+    end else begin : g_no_pool
+        assign pool_done = 1'b1;
+        /* verilator lint_off UNUSEDSIGNAL */
+        logic unused_start;
+        /* verilator lint_on UNUSEDSIGNAL */
+        assign unused_start = pool_start;
+        assign {p_act_raddr, p_act_waddr, p_act_wdata, p_act_we} = '0;
+    end
 
     // ARGMAX: one value per cycle, first maximum wins
     logic [9:0]  am_i;            // value index being read

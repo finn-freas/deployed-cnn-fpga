@@ -23,13 +23,10 @@ SEQ_PER_INSTR = 2 + isa.INSTR_W // 32   # fetch beats + next, counted in the run
 TILE_SETUP = N                     # per-row pixel coordinates
 GATHER_TAIL_WORD = 2 + N           # last word lands, transposer writes its N columns
 
-DRAIN_DELAY = N // 2 + 1           # npu_tile_engine: capture -> first shadow read (2 requants)
-PERIOD_MIN = DRAIN_DELAY + N * N // 2 + 1  # min cycles between injections
-DRAIN_DONE = DRAIN_DELAY + N * N // 2 + 4 + 2   # capture -> drain + requant pipeline empty
-# depthwise mode: no column skew, so the drain starts right after the capture
-DRAIN_DELAY_DW = 1
-PERIOD_DW = DRAIN_DELAY_DW + N * N // 2 + 1
-DRAIN_DONE_DW = DRAIN_DELAY_DW + N * N // 2 + 4 + 2
+DRAIN_DELAY = 1                    # npu_tile_engine: handover -> first shadow read (row skew only)
+PERIOD_MIN = DRAIN_DELAY + N * N // 2 + 1  # min cycles between injections (2 requants)
+DRAIN_DONE = DRAIN_DELAY + N * N // 2 + 4 + 2   # handover -> drain + requant pipeline empty
+PERIOD_DW, DRAIN_DONE_DW = PERIOD_MIN, DRAIN_DONE
 DW_K = (2, 3)                      # depthwise unit kernel sizes (SEG = 7*stride + 3 words per row)
 POOL_INIT = 1 + 7                  # npu_pool: S_INIT + shift-and-add of in_w * in_cb
 

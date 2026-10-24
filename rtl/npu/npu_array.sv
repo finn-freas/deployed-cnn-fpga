@@ -1,16 +1,14 @@
-// npu_array: N x N output-stationary systolic array with input skew and shadow outputs.
+// npu_array: N x N output-stationary MAC array with row skew and shadow outputs.
 //
-// All rows' A values and all columns' B values for reduction index k are presented in
-// the same cycle; internally row r is delayed r cycles and column c is delayed c cycles,
-// so A[r][k] and B[k][c] meet in PE(r,c). Valid and last travel with A along each row.
-// A value injected at cycle t is processed by PE(r,c) in cycle t+r+c, so a group's last
-// value moves each PE's finished sum into its shadow register as it passes, and the next
-// group can follow right behind it: no flush is needed.
+// All rows' A values and all columns' B values for reduction index k are presented in the
+// same cycle. Row r is delayed r cycles: its A value and valid/last reach all N PEs of the
+// row at once, while B moves down the columns one row per cycle, so A[r][k] and B[k][c]
+// meet in PE(r,c) in cycle t+r. A group's last value moves each PE's finished sum into its
+// shadow register as it passes, and the next group can follow right behind it.
 //
-// Depthwise mode (dw = 1; PE(r,c) = output pixel r x channel lane c): only the row skew
-// remains. Valid/last reach every PE of row r at once (r cycles after injection), B moves
-// down without the column skew, and every PE takes byte c of the one activation word dw_a
-// in that cycle, so row r works r cycles after row 0 on whatever word is then on dw_a.
+// Depthwise mode (dw = 1; PE(r,c) = output pixel r x channel lane c): instead of A[r], every
+// PE takes byte c of the one activation word dw_a, so row r works r cycles after row 0 on
+// whatever word is then on dw_a.
 
 `default_nettype none
 
@@ -28,80 +26,61 @@ module npu_array
     output      logic signed [ACC_W-1:0]  shadow [N][N]
 );
 
-    // ---- input skew: row r / column c delayed by r / c cycles
+    // ---- row skew: row r's A, valid and last delayed by r cycles
     logic signed [DATA_W-1:0] a_sk [N];
-    logic signed [DATA_W-1:0] b_sk [N];
     logic                     v_sk [N];
     logic                     l_sk [N];
 
     for (genvar i = 0; i < N; i++) begin : g_skew
         if (i == 0) begin : g_direct
             assign a_sk[i] = a[i];
-            assign b_sk[i] = b[i];
             assign v_sk[i] = valid;
             assign l_sk[i] = last;
         end else begin : g_delay
             logic signed [DATA_W-1:0] a_d [i];
-            logic signed [DATA_W-1:0] b_d [i];
             logic                     v_d [i];
             logic                     l_d [i];
             always_ff @(posedge clk) begin
                 a_d[0] <= a[i];
-                b_d[0] <= b[i];
                 v_d[0] <= valid;
                 l_d[0] <= last;
                 for (int s = 1; s < i; s++) begin
                     a_d[s] <= a_d[s-1];
-                    b_d[s] <= b_d[s-1];
                     v_d[s] <= v_d[s-1];
                     l_d[s] <= l_d[s-1];
                 end
             end
             assign a_sk[i] = a_d[i-1];
-            assign b_sk[i] = dw ? b[i] : b_d[i-1];      // depthwise: no column skew
             assign v_sk[i] = v_d[i-1];
             assign l_sk[i] = l_d[i-1];
         end
     end
 
-    // ---- PE grid: a_h/v_h/l_h[r][c] enter PE(r,c) from the left, b_v[r][c] from above
-    logic signed [DATA_W-1:0] a_h [N][N+1];
-    logic                     v_h [N][N+1];
-    logic                     l_h [N][N+1];
+    // ---- PE grid: b_v[r][c] enters PE(r,c) from above
     logic signed [DATA_W-1:0] b_v [N+1][N];
-
-    for (genvar r = 0; r < N; r++) begin : g_row
-        assign a_h[r][0] = a_sk[r];
-        assign v_h[r][0] = v_sk[r];
-        assign l_h[r][0] = l_sk[r];
-    end
     for (genvar c = 0; c < N; c++) begin : g_col
-        assign b_v[0][c] = b_sk[c];
+        assign b_v[0][c] = b[c];
     end
 
     for (genvar r = 0; r < N; r++) begin : g_r
         for (genvar c = 0; c < N; c++) begin : g_c
             npu_pe u_pe (
                 .clk, .rst,
-                .v_in  (dw ? v_h[r][0] : v_h[r][c]),
-                .l_in  (dw ? l_h[r][0] : l_h[r][c]),
-                .a_in  (dw ? DATA_W'(dw_a >> (DATA_W * c)) : a_h[r][c]),
+                .v_in  (v_sk[r]),
+                .l_in  (l_sk[r]),
+                .a_in  (dw ? DATA_W'(dw_a >> (DATA_W * c)) : a_sk[r]),
                 .b_in  (b_v[r][c]),
-                .v_out (v_h[r][c+1]),
-                .l_out (l_h[r][c+1]),
-                .a_out (a_h[r][c+1]),
                 .b_out (b_v[r+1][c]),
                 .shadow(shadow[r][c])
             );
         end
     end
 
-    // Outputs off the right/bottom edges are unused.
+    // Outputs off the bottom edge are unused.
     logic unused;
     always_comb begin
         unused = 1'b0;
-        for (int i = 0; i < N; i++)
-            unused = unused ^ v_h[i][N] ^ l_h[i][N] ^ (^a_h[i][N]) ^ (^b_v[N][i]);
+        for (int i = 0; i < N; i++) unused = unused ^ (^b_v[N][i]);
     end
 
 endmodule

@@ -61,21 +61,18 @@ module npu_tile_engine
 
     localparam int KA_AW       = $clog2(K_MAX);      // address within one A_T half
     localparam int RQ_LAT      = 4;                  // npu_requant latency
-    // Timing (injection issued in cycle i reaches PE(r,c) in cycle i+1+r+c):
-    //   the drain has two requant pipelines and reads a column pair per cycle, starting in
-    //   cycle i+DRAIN_DELAY+1: PE(r,c) is read (N/2)*r + c/2 cycles later. That must be after
-    //   its capture in cycle i+1+r+c, i.e. DRAIN_DELAY > ceil(c/2) - (N/2-1)*r for all r,c:
-    //   DRAIN_DELAY >= N/2 + 1 (the worst case is row 0, column N-1);
-    //   a later injection in cycle i2 overwrites PE(r,c)'s shadow in cycle i2+1+r+c, which
-    //   must follow that read; and since that injection also hands the next job to the
-    //   drain, this drain's N*N/2 issues must be finished: i2 >= i + DRAIN_DELAY + N*N/2 + 1
-    //   (this bound also covers the overwrite condition).
-    // Depthwise mode has no skew: every PE captures in cycle i+1, so the drain may start
-    // reading in cycle i+2 (DRAIN_DELAY_DW = 1) and i2 >= i + PERIOD_DW.
-    localparam int DRAIN_DELAY    = N / 2 + 1;
+    // Timing (a value issued in cycle i reaches row r of the array in cycle i+1+r): a job's
+    //   last value, issued in cycle h, moves row r's sums into the shadows in cycle h+1+r;
+    //   the drain (two requant pipelines, a column pair per cycle) takes the job in cycle h
+    //   and reads row r in cycles h+DRAIN_DELAY+1+(N/2)*r .. +N/2-1, after that capture for
+    //   DRAIN_DELAY >= 1. The next job's capture of row r (h2+1+r) must follow the read, and
+    //   the drain must have finished its N*N/2 reads when it takes the next job:
+    //   h2 >= h + DRAIN_DELAY + N*N/2 + 1 = h + PERIOD_MIN (which covers the overwrite).
+    //   Jobs of an instruction have equal lengths, so injections (first values) are spaced
+    //   the same way.
+    localparam int DRAIN_DELAY    = 1;
     localparam int PERIOD_MIN     = DRAIN_DELAY + N * N / 2 + 1;
-    localparam int DRAIN_DELAY_DW = 1;
-    localparam int PERIOD_DW      = DRAIN_DELAY_DW + N * N / 2 + 1;
+    localparam int PERIOD_DW      = PERIOD_MIN;
     localparam int DQ             = RQ_LAT + 1;      // drain issue -> requant output
 
     // ---------------------------------------------------------------- main FSM
@@ -549,7 +546,7 @@ module npu_tile_engine
         end
         if (hand) begin
             dr_busy <= 1'b1;
-            dr_wait <= is_dw ? 3'(DRAIN_DELAY_DW - 1) : 3'(DRAIN_DELAY - 1);
+            dr_wait <= 3'(DRAIN_DELAY - 1);
             dr_run  <= 1'b0;
             if (is_dw) begin
                 dr_ob   <= u_ob;

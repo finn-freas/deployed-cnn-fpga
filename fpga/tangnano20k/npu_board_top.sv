@@ -1,7 +1,7 @@
 // npu_board_top: the person detector on the Tang Nano 20K.
 //
-//   * boots the program and a demo image from the SPI flash (weights stream from it too)
-//     and runs one inference
+//   * boots from the SPI flash: copies the weights/params into the in-package SDRAM, loads
+//     the program and a demo image, and runs one inference
 //   * S1 resets; S2 reloads the demo image and runs again
 //   * USB-UART (1 Mbaud): send images, get class/score/cycles back (sw/board/demo.py)
 //   * HDMI 640x480: thumbnail of the input, verdict, score, latency, run count
@@ -25,7 +25,18 @@ module npu_board_top (
     output      logic       tmds_clk_p,
     output      logic       tmds_clk_n,
     output      logic [2:0] tmds_d_p,
-    output      logic [2:0] tmds_d_n
+    output      logic [2:0] tmds_d_n,
+    // in-package SDRAM
+    output      logic        O_sdram_clk,
+    output      logic        O_sdram_cke,
+    output      logic        O_sdram_cs_n,
+    output      logic        O_sdram_cas_n,
+    output      logic        O_sdram_ras_n,
+    output      logic        O_sdram_wen_n,
+    output      logic [3:0]  O_sdram_dqm,
+    output      logic [10:0] O_sdram_addr,
+    output      logic [1:0]  O_sdram_ba,
+    inout  wire logic [31:0] IO_sdram_dq
 );
     localparam int CLK_HZ = 25_200_000;
 
@@ -61,11 +72,19 @@ module npu_board_top (
     logic [11:0] thumb_raddr;
     logic [3:0]  thumb_rdata;
 
-    npu_system #(.CLK_HZ(CLK_HZ)) u_sys (
+    logic [31:0] sd_dq_o;
+    logic        sd_dq_oe;
+    assign IO_sdram_dq = sd_dq_oe ? sd_dq_o : 'z;
+    gw_sdram_clk u_sdclk (.clk, .sdram_clk(O_sdram_clk));
+
+    npu_system #(.CLK_HZ(CLK_HZ), .EXT_SDRAM(1'b1), .HAS_POOL(1'b0)) u_sys (
         .clk, .rst, .run, .uart_rx, .uart_tx,
         .spi_cs_n(flash_cs_n), .spi_clk(flash_clk), .spi_mosi(flash_mosi), .spi_miso(flash_miso),
         .booted, .boot_err, .busy, .res_valid, .res_class, .res_score, .res_cycles, .res_count,
-        .thumb_raddr, .thumb_rdata);
+        .thumb_raddr, .thumb_rdata,
+        .sd_cke(O_sdram_cke), .sd_cs_n(O_sdram_cs_n), .sd_ras_n(O_sdram_ras_n),
+        .sd_cas_n(O_sdram_cas_n), .sd_we_n(O_sdram_wen_n), .sd_ba(O_sdram_ba),
+        .sd_addr(O_sdram_addr), .sd_dqm(O_sdram_dqm), .sd_dq_o, .sd_dq_oe, .sd_dq_i(IO_sdram_dq));
 
     logic       de, hsync, vsync;
     logic [7:0] r, g, b;
