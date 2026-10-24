@@ -107,6 +107,16 @@ vww01, and board power from a USB power meter (energy per inference).
   buffer, and the 8 A-banks (64-bit wide × 128 deep, so 2 blocks each). V3 must restructure
   memory: byte-wide or transposed A-banks, tighter activation allocation / fusion, and the
   input and weights moved to SDRAM- or flash-backed streaming.
+- **V3 (memory system) (2026-10-24):** ISA v3. The packed input lives in activation memory
+  (7168 words); weights and params share one external store. The tile engine uses one
+  transposed im2col buffer (A_T, 1K × 64) fed by a double-buffered 8×8 transposer, a 1K-word
+  weight buffer (whole layer when it fits, otherwise per output group) and a 256-entry
+  param buffer. Back-ends: `ext_mem_model` (SDRAM-like) and the real `spi_flash_reader`
+  (board flash pins CS 60, CLK 59, MOSI 61, MISO 62; `gowin_pack --mspi_as_gpio`).
+  **Bit-exact through both back-ends** (MNIST 5/5, VWW 29/29). VWW latency: 1,006,914 cycles
+  with the SDRAM-like model (blocking loads; prefetch is O4), 5.0M cycles = 199 ms over 1-bit
+  SPI flash. Cycle model exact again. **BSRAM: 79 → 43 of 46.** The transposer had to be a
+  packed array (an unpacked one was inferred as 534 LUT-RAM cells). Full PnR timing pending.
 
 ## Milestones
 
