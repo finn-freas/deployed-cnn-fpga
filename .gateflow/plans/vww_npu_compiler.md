@@ -87,6 +87,17 @@ vww01, and board power from a USB power meter (energy per inference).
 | UX | `npuc compile model.onnx --calib imgs/ -o build/m` · `npuc sim` · `npuc run --board` |
 | Tests | MNIST (ONNX export of our CNN), VWW (ONNX from the float reference), a small zoo of MobileNet-style models |
 
+## Progress log
+
+- **V1 done (2026-10-23):** ISA v2 (DWCONV, AVGPOOL, packed-input CONV). All 29 VWW layers
+  bit-exact vs TFLite BUILTIN_REF on 50 images, logits bit-exact on 1000; accuracy 85.0% =
+  TFLite on the dev vww01 set. That set was rebuilt from COCO val2017 because the official
+  Silabs tarball returns HTTP 403 from this network, so a browser download is needed for
+  exact MLPerf images. Depthwise uses double rounding. v1 cycle model baseline:
+  550,776 cycles = 21.9 ms @ 25.2 MHz, 21.3% MAC utilization. Time split: pointwise 57.6%
+  (30.5% util, drain-bound), depthwise 31.5% (7.2% util), packed first conv 10.7%.
+  So the optimization order is O1 (depthwise), then O3 (overlap the drain), then O2.
+
 ## Milestones
 
 | # | Milestone | Done when |
