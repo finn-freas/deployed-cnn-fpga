@@ -42,7 +42,7 @@ one word holds the group's 8 weights (byte *i* = output channel `8g + i`), at
 | Input | K | k order |
 |-------|---|---------|
 | activation memory (`in_src = 0`) | `ksize² · in_cb · 8` | `((ky·ksize + kx)·Cb + cb)·8 + c` |
-| packed input buffer (`in_src = 1`, `in_cb` = C) | `⌈ksize² · C / 8⌉ · 8` | `(ky·ksize + kx)·C + c`, zero-padded |
+| packed input (`in_src = 1`, `in_cb` = C) | `ksize · KR`, `KR = ⌈ksize · C / 8⌉ · 8` | `ky·KR + kx·C + c`; each kernel row zero-padded to KR, so every 8-value chunk is one contiguous input-row window (the gather reads it as two aligned words) |
 
 The *k* order matches TFLite's NHWC flatten order, so a fully-connected layer is just a
 CONV whose kernel covers its whole input.

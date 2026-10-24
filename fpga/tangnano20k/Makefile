@@ -8,7 +8,9 @@ OSS    ?= $(HOME)/oss-cad-suite
 ENV    := source $(OSS)/environment &&
 ROOT   := ../..
 TOP    ?= colorbars_top
-BUILD  := build/$(TOP)
+TAG    ?=
+BUILD  := build/$(TOP)$(TAG)
+NEXTPNR_ARGS ?=                 # e.g. --placer sa, --threads 8
 CST    := tangnano20k.cst
 DEVICE := GW2AR-LV18QN88C8/I7
 FAMILY := GW2A-18C
@@ -58,7 +60,7 @@ $(BUILD)/$(TOP)-synth.json: $(SRCS) $(VENDOR_SRCS)
 $(BUILD)/$(TOP)-pnr.json: $(BUILD)/$(TOP)-synth.json $(CST)
 	$(ENV) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \
 		--vopt family=$(FAMILY) --vopt cst=$(CST) --report $(BUILD)/report.json \
-		--freq $(FREQ_MHZ) -l $(BUILD)/nextpnr.log --quiet
+		--freq $(FREQ_MHZ) $(NEXTPNR_ARGS) -l $(BUILD)/nextpnr.log --quiet
 
 $(BUILD)/$(TOP).fs: $(BUILD)/$(TOP)-pnr.json
 	$(ENV) gowin_pack -c -d $(FAMILY) -o $@ $< 2> >(grep -v "UserWarning\|warnings.warn" >&2)

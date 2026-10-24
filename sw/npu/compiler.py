@@ -140,11 +140,13 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
             b = arrays[L["name"] + ".b"].astype(np.int64)
             w_scale = arrays[L["name"] + ".w_scale"]
             if from_input:
-                # Packed input: k index = (ky*k + kx)*C + c, padded to a multiple of N.
+                # Packed input: k index = ky*KR + kx*C + c, each kernel row padded to KR (a
+                # multiple of N) so every N-value chunk is one contiguous input-row window.
                 ins = Instr(Op.CONV, in_cb=C, in_src=1, ksize=k)
-                K = ins.K
-                flat = np.zeros((out_g * N, K), np.int64)
-                flat[:w.shape[0], :k * k * ic] = w.reshape(w.shape[0], -1)
+                K, KR = ins.K, ins.packed_row_k
+                flat = np.zeros((out_g * N, k, KR), np.int64)
+                flat[:w.shape[0], :, :k * ic] = w.reshape(w.shape[0], k, k * ic)
+                flat = flat.reshape(out_g * N, K)
             else:
                 cb = cur["cb"]
                 ins = Instr(Op.CONV, in_cb=cb, ksize=k)

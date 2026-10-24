@@ -22,7 +22,7 @@ INSTR_OVERHEAD = 5                 # unit start/init/done handshake as seen by i
 SEQ_PER_INSTR = 2 + isa.INSTR_W // 32   # fetch beats + next, counted in the run total only
 TILE_SETUP = N                     # per-row pixel coordinates
 GATHER_TAIL_WORD = 2 + N           # last word lands, transposer writes its N columns
-GATHER_TAIL_PACKED = 2             # last byte lands
+
 DRAIN_DELAY = 3                    # npu_tile_engine: capture -> first shadow read
 PERIOD_MIN = DRAIN_DELAY + N * N + 1   # min cycles between injections
 DRAIN_DONE = DRAIN_DELAY + N * N + 4 + 2   # capture -> drain + requant pipeline empty
@@ -216,18 +216,21 @@ class NpuSim:
     def _conv(self, ins: Instr):
         K, G = ins.K, ins.out_g
         if ins.in_src:
-            # Packed input at byte in_base*8 of activation memory: k = (ky*ksize + kx)*C + c;
-            # uint8 -> int8 by adding in_zp (padding reads as u8 0, i.e. int8 in_zp).
+            # Packed input at byte in_base*8 of activation memory: k = ky*KR + kx*C + c (each
+            # kernel row padded to KR with zeros); uint8 -> int8 by adding in_zp (padding taps
+            # read as u8 0, i.e. int8 in_zp).
             iy, ix, valid = self._window(ins)
-            C = ins.in_cb
+            C, ks, KR = ins.in_cb, ins.ksize, ins.packed_row_k
             addr = ins.in_base * N + ((iy * ins.in_w + ix) * C)[..., None] + np.arange(C)   # bytes
             v = np.broadcast_to(valid[..., None], addr.shape)
             self._check(addr[v] // N, isa.ACT_DEPTH, "CONV packed input")
             act_bytes = self.act.view(np.uint8).reshape(-1)
-            u8 = np.where(v, act_bytes[np.where(v, addr, 0)], 0).astype(np.int64)
-            A = np.zeros((u8.shape[0], K), np.int64)
-            A[:, :u8[0].size] = (((u8 + ins.in_zp + 128) & 0xFF) - 128).reshape(u8.shape[0], -1)
-            real_k = ins.ksize * ins.ksize * C
+            u8 = np.where(v, act_bytes[np.where(v, addr, 0)], 0).astype(np.int64)   # [P, ks, ks, C]
+            P0 = u8.shape[0]
+            A = np.zeros((P0, ks, KR), np.int64)
+            A[:, :, :ks * C] = (((u8 + ins.in_zp + 128) & 0xFF) - 128).reshape(P0, ks, ks * C)
+            A = A.reshape(P0, K)
+            real_k = ks * ks * C
         else:
             words, _ = self._gather_words(ins, ins.in_zp)
             A = words.reshape(words.shape[0], -1).astype(np.int64)                  # [P, K]
@@ -238,8 +241,8 @@ class NpuSim:
         self._write_out(ins, self._requant(ins, acc, G))
 
         tiles = -(-P // N)
-        if ins.in_src:   # packed: one byte per cycle
-            issue, tail = N * K, GATHER_TAIL_PACKED
+        if ins.in_src:   # packed (O2): two aligned word reads per (k-word, row), then the transposer
+            issue, tail = 2 * K, GATHER_TAIL_WORD
         else:            # one word per cycle through the transposer
             issue, tail = N * (K // N), GATHER_TAIL_WORD
         self.stats.cycles.append(tile_engine_cycles(

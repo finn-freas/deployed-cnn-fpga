@@ -95,9 +95,15 @@ class Instr:
         """Reduction length per output value (CONV), or taps per channel (DWCONV)."""
         if self.op == Op.DWCONV:
             return self.ksize * self.ksize
-        if self.in_src:   # packed input: k = (ky*ksize + kx)*C + c, padded to a multiple of N
-            return -(-self.ksize * self.ksize * self.in_cb // N) * N
+        if self.in_src:   # packed input: k = ky*KR + kx*C + c, each kernel row padded to KR
+            return self.ksize * self.packed_row_k
         return self.ksize * self.ksize * self.in_cb * N
+
+    @property
+    def packed_row_k(self) -> int:
+        """KR for packed-input CONV: one kernel row's ksize*C bytes, padded to a multiple of N.
+        Each N-value chunk of K is then a contiguous window of one input row (O2)."""
+        return -(-self.ksize * self.in_cb // N) * N
 
     def encode(self) -> int:
         word, pos = 0, 0

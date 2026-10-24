@@ -135,33 +135,50 @@ module npu_tile_engine
     logic [6:0]  cy, cx;            // coordinate walker (tile setup)
     logic [3:0]  sr;                // setup row counter
 
+    // Gather order: k-word outer, rows inner. Word mode reads one channel-blocked word per
+    // (k-word, row). Packed mode (O2): each k-word is a contiguous 8-byte window of one input
+    // row (the compiler pads each kernel row to KR), read as two aligned words (phase 0/1).
     logic [2:0]  gr;                // row being read
-    logic [10:0] gk;                // k-word (word mode) or byte k (packed mode)
-    logic [3:0]  ky;                // one bit wider than ksize: packed mode counts past the kernel
-    logic [2:0]  kx;
-    logic [5:0]  kc;                // channel block (word mode) or channel (packed mode)
+    logic [10:0] gk;                // k-word
+    logic        ph;                // packed mode: which of the two aligned words
+    logic [3:0]  ky;
+    logic [2:0]  kx;                // word mode: kernel column
+    logic [5:0]  kc;                // word mode: channel block
+    logic [3:0]  kj;                // packed mode: window within the kernel row (0..KRW-1)
+    logic [3:0]  krw;               // packed mode: KR / N
+    logic [8:0]  ksc;               // packed mode: ksize * C (real bytes per kernel row)
 
-    logic signed [9:0] iy, ix;
-    logic              real_tap, inb;
-    logic [23:0]       pix_lin;
-    logic [26:0]       byte_addr;
+    logic signed [9:0]  iy, ix, ix0;
+    logic               inb, row_ok;
+    logic [23:0]        pix_lin;
+    logic signed [22:0] win_addr;   // packed: byte address of the window (may be < 0 at the edge)
+    logic signed [9:0]  lo_m, hi_m; // packed: window bytes m with lo_m <= m < hi_m are in bounds
     always_comb begin
-        iy = 10'(signed'({3'b0, row_py[gr]}) * signed'({8'b0, I.stride})) + 10'(ky) - 10'(I.pad);
-        ix = 10'(signed'({3'b0, row_px[gr]}) * signed'({8'b0, I.stride})) + 10'(kx) - 10'(I.pad);
-        real_tap  = ky < 4'(I.ksize);
-        inb = row_valid[gr] && real_tap && iy >= 0 && iy < 10'(I.in_h) && ix >= 0 && ix < 10'(I.in_w);
-        pix_lin   = 24'(unsigned'(iy)) * 24'(I.in_w) + 24'(unsigned'(ix));
-        byte_addr = 27'({I.in_base, 3'b000}) + 27'(pix_lin * 24'(I.in_cb)) + 27'(kc);
-        if (pk_mode) act_raddr = ACT_AW'(byte_addr >> 3);
+        iy  = 10'(signed'({3'b0, row_py[gr]}) * signed'({8'b0, I.stride})) + 10'(ky) - 10'(I.pad);
+        ix0 = 10'(signed'({3'b0, row_px[gr]}) * signed'({8'b0, I.stride})) - 10'(I.pad);
+        ix  = ix0 + 10'(kx);
+        row_ok  = row_valid[gr] && iy >= 0 && iy < 10'(I.in_h);
+        inb     = row_ok && ix >= 0 && ix < 10'(I.in_w);
+        pix_lin = 24'(unsigned'(iy)) * 24'(I.in_w) + 24'(unsigned'(ix));
+        win_addr = 23'(signed'({1'b0, I.in_base, 3'b000}))
+                 + 23'((23'(signed'(iy)) * 23'(signed'({1'b0, I.in_w})) + 23'(ix0)) * 23'(signed'({1'b0, I.in_cb})))
+                 + 23'(signed'({1'b0, kj, 3'b000}));
+        lo_m = (ix0 < 0) ? 10'(-ix0) * 10'(I.in_cb) : 10'sd0;
+        hi_m = 10'(10'(signed'({1'b0, I.in_w})) - ix0) * 10'(I.in_cb);
+        if (pk_mode) act_raddr = ACT_AW'((win_addr >>> 3) + 23'(ph));
         else         act_raddr = ACT_AW'(24'(I.in_base) + pix_lin * 24'(I.in_cb) + 24'(is_dw ? p_g : kc));
     end
 
     // read-data pipeline (act memory has 1-cycle latency)
-    logic        d_v, d_pad, d_real;
-    logic [2:0]  d_r, d_lane;
-    logic [KA_AW-1:0] d_k;
+    logic        d_v, d_pad, d_ph;
+    logic [2:0]  d_r, d_sh;
+    logic [7:0]  d_k;               // k-word
+    logic        d_rowok;
+    logic [3:0]  d_kj;
+    logic signed [9:0] d_lo, d_hi;
+    logic [WORD_W-1:0] w0;          // packed: first aligned word of the window
 
-    // word mode: double-buffered transposer. Packed array on purpose: it is read N ways at
+    // double-buffered transposer (both modes). Packed array on purpose: it is read N ways at
     // once (one column of bytes per cycle), so as an unpacked array synthesis would infer a
     // multi-port LUT RAM and replicate it per read port; as a vector it is plain flip-flops.
     logic [1:0][N-1:0][WORD_W-1:0] tb;
@@ -169,34 +186,30 @@ module npu_tile_engine
     logic        wo_active, wo_buf;
     logic [2:0]  wo_cnt;
     logic [7:0]  wo_kw;
-    // packed mode: word under assembly (byte r = row r)
-    logic [WORD_W-1:0] pk_word;
 
+    // packed mode: assemble a row's window from the two aligned words, applying padding
+    logic [WORD_W-1:0] pk_row;
     always_comb begin
-        logic [WORD_W-1:0] w;
-        logic [7:0] b;
-        at_we    = 1'b0;
-        at_waddr = '0;
-        at_wdata = '0;
-        w = pk_word;
-        b = '0;
-        if (pk_mode) begin
-            if (d_v) begin
-                b = !d_real ? 8'd0 : (d_pad ? I.in_zp : 8'(act_rdata >> (8 * d_lane)) + I.in_zp);
-                w[8 * d_r +: 8] = b;
-                at_we    = (d_r == 3'(N - 1));
-                at_waddr = {gbuf, d_k};
-                at_wdata = w;
-            end
-        end else if (wo_active) begin
-            at_we    = 1'b1;
-            at_waddr = {gbuf, KA_AW'({wo_kw, wo_cnt})};
-            for (int r = 0; r < N; r++) at_wdata[8 * r +: 8] = 8'(tb[wo_buf][r] >> (8 * wo_cnt));
+        logic [WORD_W-1:0]   win;
+        logic signed [9:0]   m;
+        win = WORD_W'({act_rdata, w0} >> (8 * d_sh));
+        for (int b = 0; b < N; b++) begin
+            m = 10'(signed'({1'b0, d_kj, 3'b000})) + 10'(b);
+            if (m >= 10'(signed'({1'b0, ksc})))   pk_row[8 * b +: 8] = 8'd0;        // past the kernel row
+            else if (!d_rowok || m < d_lo || m >= d_hi) pk_row[8 * b +: 8] = I.in_zp;   // padding
+            else                                       pk_row[8 * b +: 8] = 8'(win >> (8 * b)) + I.in_zp;
         end
     end
 
+    always_comb begin
+        at_we    = wo_active;
+        at_waddr = {gbuf, KA_AW'({wo_kw, wo_cnt})};
+        at_wdata = '0;
+        for (int r = 0; r < N; r++) at_wdata[8 * r +: 8] = 8'(tb[wo_buf][r] >> (8 * wo_cnt));
+    end
+
     logic gather_last;
-    assign gather_last = (gr == 3'(N - 1)) && (gk == (pk_mode ? K - 11'd1 : 11'(KW) - 11'd1));
+    assign gather_last = (gr == 3'(N - 1)) && (gk == 11'(KW) - 11'd1) && (!pk_mode || ph);
     always_comb KW = 8'(K >> 3);
 
     // ---------------------------------------------------------------- consumer (stream)
@@ -301,22 +314,19 @@ module npu_tile_engine
         st_zero   <= 1'b0;
         if (since_inj != 8'hFF) since_inj <= since_inj + 8'd1;
 
-        // ---- gather data landing
-        if (d_v) begin
-            if (pk_mode) begin
-                pk_word <= at_wdata;
-            end else begin
-                tb[tb_sel][d_r] <= d_pad ? {N{I.in_zp}} : act_rdata;
-                if (d_r == 3'(N - 1)) begin
-                    tb_sel    <= !tb_sel;
-                    wo_active <= 1'b1;
-                    wo_buf    <= tb_sel;
-                    wo_cnt    <= '0;
-                    wo_kw     <= 8'(d_k);
-                end
+        // ---- gather data landing: one row word per (k-word, row), then the transposer
+        if (d_v && pk_mode && !d_ph) w0 <= act_rdata;
+        if (d_v && (!pk_mode || d_ph)) begin
+            tb[tb_sel][d_r] <= pk_mode ? pk_row : (d_pad ? {N{I.in_zp}} : act_rdata);
+            if (d_r == 3'(N - 1)) begin
+                tb_sel    <= !tb_sel;
+                wo_active <= 1'b1;
+                wo_buf    <= tb_sel;
+                wo_cnt    <= '0;
+                wo_kw     <= d_k;
             end
         end
-        if (wo_active && !(d_v && !pk_mode && d_r == 3'(N - 1))) begin
+        if (wo_active && !(d_v && (!pk_mode || d_ph) && d_r == 3'(N - 1))) begin
             wo_cnt <= wo_cnt + 3'd1;
             if (wo_cnt == 3'(N - 1)) wo_active <= 1'b0;
         end
@@ -403,9 +413,16 @@ module npu_tile_engine
                         K <= 11'(I.ksize) * 11'(I.ksize) * 11'(N);
                         layer_words <= 17'(I.out_g) * 17'(I.ksize) * 17'(I.ksize);
                     end else if (I.in_src) begin
+                        // packed: K = ksize * KR, KR = ksize*C rounded up to a multiple of N
+                        logic [8:0]  sc;
+                        logic [3:0]  rw;
                         logic [10:0] kp;
-                        kp = ((11'(I.ksize) * 11'(I.ksize) * 11'(I.in_cb) + 11'(N - 1)) >> 3) << 3;
-                        K <= kp;
+                        sc = 9'(I.ksize) * 9'(I.in_cb);
+                        rw = 4'((sc + 9'(N - 1)) >> 3);
+                        kp = 11'(I.ksize) * 11'(rw) * 11'(N);
+                        ksc <= sc;
+                        krw <= rw;
+                        K   <= kp;
                         layer_words <= 17'(I.out_g) * 17'(kp);
                     end else begin
                         K <= 11'(I.ksize) * 11'(I.ksize) * 11'(I.in_cb) * 11'(N);
@@ -488,7 +505,7 @@ module npu_tile_engine
                         cx <= p_ox;
                     end else begin
                         pstate <= P_GATHER;
-                        gr <= '0; gk <= '0; ky <= '0; kx <= '0; kc <= '0;
+                        gr <= '0; gk <= '0; ky <= '0; kx <= '0; kc <= '0; kj <= '0; ph <= 1'b0;
                     end
                 end
 
@@ -502,22 +519,40 @@ module npu_tile_engine
                         p_noy  <= step_y(cy, cx, I.out_w);
                         p_nox  <= step_x(cx, I.out_w);
                         pstate <= P_GATHER;
-                        gr <= '0; gk <= '0; ky <= '0; kx <= '0; kc <= '0;
+                        gr <= '0; gk <= '0; ky <= '0; kx <= '0; kc <= '0; kj <= '0; ph <= 1'b0;
                     end
                     sr <= sr + 4'd1;
                 end
 
                 P_GATHER: begin
-                    d_v    <= 1'b1;
-                    d_r    <= gr;
-                    d_k    <= KA_AW'(gk);
-                    d_pad  <= !inb;
-                    d_real <= real_tap;
-                    d_lane <= byte_addr[2:0];
+                    d_v     <= 1'b1;
+                    d_r     <= gr;
+                    d_k     <= 8'(gk);
+                    d_pad   <= !inb;
+                    d_ph    <= ph;
+                    d_sh    <= win_addr[2:0];
+                    d_kj    <= kj;
+                    d_rowok <= row_ok;
+                    d_lo    <= lo_m;
+                    d_hi    <= hi_m;
                     if (gather_last) begin
                         pstate <= P_TAIL;
+                    end else if (pk_mode && !ph) begin
+                        ph <= 1'b1;                     // second aligned word of this window
                     end else if (gr != 3'(N - 1)) begin
+                        ph <= 1'b0;
                         gr <= gr + 3'd1;
+                    end else if (pk_mode) begin
+                        // next window: within the kernel row, then the next kernel row
+                        ph <= 1'b0;
+                        gr <= '0;
+                        gk <= gk + 11'd1;
+                        if (kj == krw - 4'd1) begin
+                            kj <= '0;
+                            ky <= ky + 4'd1;
+                        end else begin
+                            kj <= kj + 4'd1;
+                        end
                     end else begin
                         gr <= '0;
                         gk <= gk + 11'd1;
