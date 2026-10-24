@@ -117,6 +117,21 @@ vww01, and board power from a USB power meter (energy per inference).
   with the SDRAM-like model (blocking loads; prefetch is O4), 5.0M cycles = 199 ms over 1-bit
   SPI flash. Cycle model exact again. **BSRAM: 79 → 43 of 46.** The transposer had to be a
   packed array (an unpacked one was inferred as 534 LUT-RAM cells). Full PnR timing pending.
+- **Optimization (2026-10-24):** O3 overlapped drain (705,711), O3b double-buffered A_T
+  (462,990), O4a group-mode weight prefetch (419,791), O2 packed first-layer gather (376,047),
+  O3c dual requant drain (335,657), O3d gather-tail overlap (320,682). Each step bit-exact
+  on both back-ends with the cycle model exact.
+- **O1 depthwise datapath (2026-10-24):** DW units are 8 adjacent output pixels of one row ×
+  one channel block. The input rows stream through a 17-word shift register; the array's
+  depthwise mode feeds each PE (pixel × channel lane) directly. Depthwise 128,044 → 71,516
+  cycles; **VWW 264,161 cycles = 10.5 ms @ 25.2 MHz**. Stride-1 units are drain-bound
+  (34 cycles for 64 outputs through two requant pipelines); stride-2 units are read-bound
+  (51).
+- **PnR hang diagnosed (2026-10-24):** with `--placer-heap-cell-placement-timeout` nextpnr
+  stops with "Unable to find legal placement for cell … MULT9X9" (an address-math multiplier
+  in the pool). The default timeout is cells²/8 attempts, which looks like a hang. All
+  address arithmetic is now incremental or shift-and-add, so the DSPs are only the 64 PEs
+  and the two requant multipliers.
 
 ## Milestones
 

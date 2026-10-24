@@ -27,6 +27,7 @@ def _vectors(rng, n):
     hi = np.maximum(lo, rng.integers(-128, 128, n))
     lo[:2000], hi[:2000] = -128, 127                       # some unclamped, to see raw rounding
     mult[:4], shift[:4] = INT32_MAX, [0, -31, 7, -1]       # extreme multiplier / shifts
+    shift[rmode == 1] = np.minimum(shift[rmode == 1], 0)   # single rounding: shift <= 0 (ISA)
     return acc, bias, mult, shift, rmode, zp, lo, hi
 
 

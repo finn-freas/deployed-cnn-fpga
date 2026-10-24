@@ -26,6 +26,12 @@ GATHER_TAIL_WORD = 2 + N           # last word lands, transposer writes its N co
 DRAIN_DELAY = N // 2 + 1           # npu_tile_engine: capture -> first shadow read (2 requants)
 PERIOD_MIN = DRAIN_DELAY + N * N // 2 + 1  # min cycles between injections
 DRAIN_DONE = DRAIN_DELAY + N * N // 2 + 4 + 2   # capture -> drain + requant pipeline empty
+# depthwise mode: no skew, so the drain starts right after the capture
+DRAIN_DELAY_DW = 1
+PERIOD_DW = DRAIN_DELAY_DW + N * N // 2 + 1
+DRAIN_DONE_DW = DRAIN_DELAY_DW + N * N // 2 + 4 + 2
+DW_MAX_K = 3                       # depthwise line: SEG = 7*stride + 3 words per kernel row
+POOL_INIT = 1 + 7                  # npu_pool: S_INIT + shift-and-add of in_w * in_cb
 
 # External store (rtl/sim/ext_mem_model.sv defaults, as instantiated by npu_sim_top)
 EXT_LATENCY = 6
@@ -38,27 +44,24 @@ def ext_load_cycles(words: int) -> int:
 
 
 def tile_engine_cycles(*, K: int, G: int, tiles: int, gather_issue: int, gather_tail: int,
-                       dw: bool, cached: bool, param_words: int, weight_words: int) -> int:
-    """Event-level replica of npu_tile_engine (overlapped drain O3 + double-buffered A_T).
+                       cached: bool, param_words: int, weight_words: int) -> int:
+    """Event-level replica of npu_tile_engine for CONV (overlapped drain O3 + double-buffered
+    A_T).
 
-    Units: cached CONV -> one per tile (all G jobs); DWCONV -> one per (tile, channel
-    block); group mode -> one per (group, tile). A producer gathers units into two A_T
-    halves; a consumer streams each unit's jobs, then releases the half. Injections must be
-    PERIOD_MIN cycles apart; every wait state lasts at least one cycle; a flag set in a
-    state's last cycle is visible the cycle after.
+    Units: cached -> one per tile (all G jobs); group mode -> one per (group, tile). A
+    producer gathers units into two A_T halves; a consumer streams each unit's jobs, then
+    releases the half. Injections must be PERIOD_MIN cycles apart; every wait state lasts at
+    least one cycle; a flag set in a state's last cycle is visible the cycle after.
     """
     t = 1 + ext_load_cycles(param_words)                      # S_INIT, params
     if cached:
         t += ext_load_cycles(weight_words)                    # whole layer's weights
     # units in order: (tile index, group, new_tile, needs_weight_load)
-    units = []
-    if dw:
-        units = [(ti, g, g == 0, False) for ti in range(tiles) for g in range(G)]
-    elif cached:
+    if cached:
         units = [(ti, 0, True, False) for ti in range(tiles)]
     else:
         units = [(ti, g, True, ti == 0) for g in range(G) for ti in range(tiles)]
-    jobs_per_unit = G if (cached and not dw) else 1
+    jobs_per_unit = G if cached else 1
 
     ready = [0] * len(units)            # cycle the unit's full flag becomes visible
     release = [0] * len(units)          # cycle the unit's release becomes visible
@@ -97,9 +100,25 @@ def tile_engine_cycles(*, K: int, G: int, tiles: int, gather_issue: int, gather_
         if not cached and ti == tiles - 1:
             group_done[g] = s
         c_t = s
-    cap = max(c_t, last_inj + PERIOD_MIN) + 1                 # C_CAP_WAIT; C_CAPTURE
-    t = cap + 2                                               # C_DONE seen; S_FINISH
-    t = max(t, cap + DRAIN_DONE) + 1
+    hand = last_inj + K - 1                                   # last job's last value: drain takes it
+    t = hand + DRAIN_DONE + 1                                 # (C_DONE, S_FINISH come sooner)
+    return t + INSTR_OVERHEAD - 1
+
+
+def dw_engine_cycles(*, ksize: int, stride: int, units: int, param_words: int,
+                     weight_words: int) -> int:
+    """npu_tile_engine in depthwise mode: a unit (N pixels of an output row x one channel
+    block) streams ksize kernel rows of SEG words through the line, one word per cycle; its
+    first tap (the injection) comes SEG cycles after its first read, and injections are at
+    least PERIOD_DW apart. The drain takes the last unit with its last tap, ksize cycles
+    after its last read. (The previous instruction's last injection is always long past, so
+    the first unit starts at once.)"""
+    seg = 7 * stride + 3
+    t = 1 + ext_load_cycles(param_words) + ext_load_cycles(weight_words)   # run_start seen
+    period = max(ksize * seg, PERIOD_DW)
+    t0_last = t + 1 + (units - 1) * period            # last unit's first read
+    hand = t0_last + ksize * seg - 1 + ksize          # its last tap
+    t = hand + DRAIN_DONE_DW + 1
     return t + INSTR_OVERHEAD - 1
 
 
@@ -246,7 +265,7 @@ class NpuSim:
         else:            # one word per cycle through the transposer
             issue, tail = N * (K // N), GATHER_TAIL_WORD
         self.stats.cycles.append(tile_engine_cycles(
-            K=K, G=G, tiles=tiles, gather_issue=issue, gather_tail=tail, dw=False,
+            K=K, G=G, tiles=tiles, gather_issue=issue, gather_tail=tail,
             cached=G * K <= isa.WBUF_DEPTH, param_words=G * N * isa.PARAM_WORDS, weight_words=G * K))
         self.stats.macs.append(P * real_k * G * N)
 
@@ -258,13 +277,10 @@ class NpuSim:
         Wm = self._weights(ins, cb * T).reshape(cb, T, N)
         acc = np.einsum("ptgc,gtc->pgc", A, Wm)                                       # [P, cb, N]
         self._write_out(ins, self._requant(ins, acc, cb))
-        # CONV datapath with block-diagonal weights (K = T*N), A re-gathered per channel block;
-        # depthwise weights always fit the weight buffer (cached).
-        tiles = -(-P // N)
-        assert cb * T <= isa.WBUF_DEPTH
-        self.stats.cycles.append(tile_engine_cycles(
-            K=T * N, G=cb, tiles=tiles, gather_issue=N * T, gather_tail=GATHER_TAIL_WORD,
-            dw=True, cached=True,
+        # depthwise line datapath; the weights always fit the weight buffer (cached)
+        assert ins.ksize <= DW_MAX_K and ins.stride in (1, 2) and cb * T <= isa.WBUF_DEPTH
+        self.stats.cycles.append(dw_engine_cycles(
+            ksize=ins.ksize, stride=ins.stride, units=cb * ins.out_h * -(-ins.out_w // N),
             param_words=cb * N * isa.PARAM_WORDS, weight_words=cb * T))
         self.stats.macs.append(P * T * cb * N)
 
@@ -273,26 +289,13 @@ class NpuSim:
         m = np.where(v[..., None], words, np.int8(-128)).max(axis=(1, 2))
         m = np.clip(m, ins.act_min, ins.act_max).astype(np.int8)
         self._write_out(ins, m)
-        self.stats.cycles.append(self._pool_cycles(ins, m.shape[0], divide=False))
+        # taps + tail + write (and advance), per pixel per block
+        self.stats.cycles.append(m.shape[0] * ins.in_cb * (ins.ksize ** 2 + 2)
+                                 + POOL_INIT - 1 + INSTR_OVERHEAD)
         self.stats.macs.append(0)
-
-    @staticmethod
-    def _pool_cycles(ins: Instr, P: int, divide: bool) -> int:
-        # taps + tail + (divider: init + 16 steps | 1) + write + next, per pixel per block
-        return P * ins.in_cb * (ins.ksize ** 2 + 1 + (17 if divide else 1) + 1 + 1) + INSTR_OVERHEAD
 
     def _avgpool(self, ins: Instr):
-        # TFLite reference int8 AveragePool: sum over in-bounds taps, divide by their count
-        # rounding half away from zero (C truncating division), then clamp.
-        words, v = self._gather_words(ins, 0)
-        s = np.where(v[..., None], words.astype(np.int64), 0).sum(axis=(1, 2))        # [P, cb, N]
-        cnt = v[..., 0].sum(axis=(1, 2)).reshape(-1, 1, 1).astype(np.int64)
-        half = cnt // 2
-        q = np.where(s > 0, (s + half) // cnt, -((-(s - half)) // cnt))
-        q = np.clip(q, ins.act_min, ins.act_max).astype(np.int8)
-        self._write_out(ins, q)
-        self.stats.cycles.append(self._pool_cycles(ins, q.shape[0], divide=True))
-        self.stats.macs.append(0)
+        raise NotImplementedError("AVGPOOL is lowered to DWCONV by the compiler")
 
     def _argmax(self, ins: Instr):
         count = ins.in_w

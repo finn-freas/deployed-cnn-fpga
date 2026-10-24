@@ -62,20 +62,43 @@ class Program:
 
     def add_params(self, bias, w_sum, in_zp, scales, n_padded) -> int:
         """Per-channel params; input zero point folded into the bias (padding = in_zp)."""
-        if n_padded > isa.PBUF_DEPTH:
-            raise MemoryError(f"{n_padded} output channels exceed the param buffer")
-        words = []
+        params = []
         for o in range(n_padded):
             if o < len(bias):
                 b = int(bias[o] - in_zp * w_sum[o])
                 assert INT32_MIN <= b <= INT32_MAX
-                p = (b, *quantize_multiplier(scales[o]))
+                params.append((b, *quantize_multiplier(scales[o])))
             else:
-                p = (0, 0, 0)
+                params.append((0, 0, 0))
+        return self.add_raw_params(params)
+
+    def add_raw_params(self, params) -> int:
+        """(bias, mult, shift) per output channel, as given."""
+        if len(params) > isa.PBUF_DEPTH:
+            raise MemoryError(f"{len(params)} output channels exceed the param buffer")
+        words = []
+        for p in params:
             self.params.append(p)
             words.extend(isa.param_ext_words(*p))
         rows = np.frombuffer(np.array(words, dtype="<u8").tobytes(), dtype=np.int8).reshape(-1, N)
         return self._append(rows, "params")
+
+
+def avgpool_multiplier(n: int) -> tuple[int, int] | None:
+    """(mult, shift) such that single-rounding requant of a window sum equals TFLite's int8
+    AveragePool division (round half away from zero) for every reachable sum of n int8
+    values, or None. Single rounding is round-half-up, so this works when no sum is an exact
+    tie, i.e. for odd n; checked exhaustively."""
+    if n < 2:
+        return None
+    mult, shift = quantize_multiplier(1.0 / n)
+    if shift > 0:
+        return None
+    s = np.arange(-128 * n, 127 * n + 1, dtype=np.int64)
+    ref = np.where(s > 0, (s + n // 2) // n, -((-(s - n // 2)) // n))          # C division
+    total = 31 - shift
+    got = (s * mult + (1 << (total - 1))) >> total
+    return (mult, shift) if np.array_equal(got, ref) else None
 
 
 class ActAllocator:
@@ -162,12 +185,16 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
             p_base = prog.add_params(b, w.reshape(w.shape[0], -1).sum(1), L["in_zp"], scales,
                                      out_g * N)
             rmode = RMODE["fc" if L.get("from_fc") else "conv"]
+            if rmode == RMODE_SINGLE and any(s > 0 for _, _, s in prog.params[-out_g * N:]):
+                raise NotImplementedError(f"{L['name']}: single rounding needs scale < 1 (shift <= 0)")
             prog.instrs.append(Instr(Op.CONV, in_cb=ins.in_cb, in_src=ins.in_src, ksize=k,
                                      w_base=w_base, p_base=p_base, rmode=rmode, **common))
         elif L["op"] == "dwconv":
             k = L["kh"]
             cb = cur["cb"]
             assert out_g == cb
+            if k > 3 or L["stride"] not in (1, 2):
+                raise NotImplementedError(f"{L['name']}: the depthwise unit supports k <= 3, stride 1/2")
             w = arrays[L["name"] + ".w"].astype(np.int64)          # [C, k, k]
             b = arrays[L["name"] + ".b"].astype(np.int64)
             w_scale = arrays[L["name"] + ".w_scale"]
@@ -179,10 +206,27 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
             p_base = prog.add_params(b, w.reshape(w.shape[0], -1).sum(1), L["in_zp"], scales, cb * N)
             prog.instrs.append(Instr(Op.DWCONV, in_cb=cb, ksize=k, w_base=w_base, p_base=p_base,
                                      rmode=RMODE["dwconv"], **common))
-        elif L["op"] in ("maxpool", "avgpool"):
+        elif L["op"] == "maxpool":
             assert out_g == cur["cb"]
-            op = Op.MAXPOOL if L["op"] == "maxpool" else Op.AVGPOOL
-            prog.instrs.append(Instr(op, in_cb=cur["cb"], ksize=L["k"], **common))
+            prog.instrs.append(Instr(Op.MAXPOOL, in_cb=cur["cb"], ksize=L["k"], **common))
+        elif L["op"] == "avgpool":
+            # Lowered to DWCONV: ones weights, no zero-point folding (input and output share
+            # quantization), single-rounding requant by 1/n. Needs every window fully inside
+            # the input (constant n) and a multiplier that reproduces the division exactly.
+            cb, k = cur["cb"], L["k"]
+            n = k * k
+            inside = L.get("pad", 0) == 0 and (oh - 1) * L["stride"] + k <= ih \
+                and (ow - 1) * L["stride"] + k <= iw
+            stride = 1 if oh == ow == 1 else L["stride"]
+            mq = avgpool_multiplier(n) if inside else None
+            if mq is None or k > 3 or stride not in (1, 2):
+                raise NotImplementedError(f"{L['name']}: AVGPOOL needs a {k}x{k} window inside the "
+                                          f"input, k <= 3, stride 1/2 (or 1x1 output) and odd k*k")
+            w_base = prog.add_weights(np.ones((cb * n, N), np.int64), L["name"])
+            p_base = prog.add_raw_params([(0, *mq)] * (cb * N))
+            common.update(stride=stride, pad=0, in_zp=0, out_zp=0)
+            prog.instrs.append(Instr(Op.DWCONV, in_cb=cb, ksize=k, w_base=w_base, p_base=p_base,
+                                     rmode=RMODE_SINGLE, **common))
         else:
             raise NotImplementedError(L["op"])
 
@@ -195,6 +239,8 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
     prog.instrs.append(Instr(Op.ARGMAX, in_base=cur["base"], in_w=cur["c"], comment="class = argmax"))
     prog.instrs.append(Instr(Op.END))
     assert len(prog.instrs) <= isa.IMEM_DEPTH, "program too long"
+    for ins in prog.instrs:
+        ins.encode()                    # every field fits the instruction format
     prog.meta.update(ext_used=prog.ext_used, n_params=len(prog.params), n_instr=len(prog.instrs),
                      classes=cur["c"])
     return prog

@@ -98,7 +98,7 @@ written in raster order, `out_g` words per pixel.
 ### `DWCONV` (0x3)
 Depthwise convolution (depth multiplier 1): each channel convolves only with its own
 `ksize × ksize` filter. Same padding, requantization and output layout as CONV, with
-`out_g = in_cb`.
+`out_g = in_cb`. The depthwise datapath supports `ksize ≤ 3` and `stride` 1 or 2.
 
 ### `MAXPOOL` (0x2) / `AVGPOOL` (0x5)
 `ksize × ksize` window, stride `stride`, top/left padding `pad`, per channel; then clamp.
@@ -106,7 +106,11 @@ Input and output share quantization, so no requantization is needed.
 - MAXPOOL: max over in-bounds taps.
 - AVGPOOL (TFLite reference int8): `s = Σ` in-bounds taps, `n` = their count;
   `q = s > 0 ? (s + n/2) / n : (s − n/2) / n` with C truncating division, i.e. round
-  half away from zero.
+  half away from zero. **Not implemented in hardware:** the compiler lowers it to a DWCONV
+  with all-ones weights, zero bias and zero points, and single-rounding requant by `1/n`.
+  That is exact when every window lies inside the input (constant `n`) and `n` is odd
+  (round-half-up then has no ties); the compiler checks the multiplier exhaustively over
+  all reachable sums and rejects other pools.
 
 ### `ARGMAX` (0x4)
 Over `count = in_w` int8 values stored consecutively from `in_base` (value *i* is byte
@@ -125,7 +129,9 @@ Stop and publish the result register and perf counters. / No operation.
 
 Measured on TF 2.21 reference kernels (BUILTIN_REF): each form gives zero mismatches on
 its own op types and thousands of mismatches (conv) or a handful (FC) on the others.
-See `sw/npu/quant.py`.
+See `sw/npu/quant.py`. Single rounding requires `shift ≤ 0` (effective scale < 1), so both
+forms can share one rounding datapath in hardware (see `rtl/npu/npu_requant.sv`); the
+compiler rejects layers that violate this.
 
 ## Example: MLPerf Tiny VWW (MobileNetV1-0.25), first instructions
 

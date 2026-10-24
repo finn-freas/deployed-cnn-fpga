@@ -54,7 +54,7 @@ module npu_core
     typedef enum logic [1:0] {U_NONE, U_TILE, U_POOL, U_ARGMAX} unit_e;
     qstate_e qs;
     unit_e   unit;
-    instr_t  ins;
+    instr_t  ins;                        // the fetched instruction (stable until the next fetch)
     logic    host_ok;
 
     assign host_ok = (qs == Q_IDLE) || (qs == Q_PAUSE);
@@ -70,11 +70,13 @@ module npu_core
     logic [31:0]        imem_rdata32;
     logic [IB_AW-1:0]   imem_raddr;
     logic [INSTR_W-1:0] imem_rdata;      // assembled instruction
+    assign ins = instr_t'(imem_rdata);
     logic [3:0]         fb;              // fetch beat
+    logic [IB_AW-1:0]   ib_base;         // pc * IMEM_BEATS
     sdpram #(.W(32), .D(IMEM_DEPTH * IMEM_BEATS)) u_imem (
         .clk, .we(host_ok && host_we && host_sel == SEL_IMEM), .waddr(IB_AW'(host_addr)),
         .wdata(host_wdata[31:0]), .raddr(imem_raddr), .rdata(imem_rdata32));
-    assign imem_raddr = IB_AW'(pc * IB_AW'(IMEM_BEATS) + IB_AW'(fb));
+    assign imem_raddr = ib_base + IB_AW'(fb);
 
     logic [ACT_AW-1:0] act_raddr, act_waddr;
     logic [WORD_W-1:0] act_rdata, act_wdata;
@@ -123,7 +125,7 @@ module npu_core
         end
         if (rst) begin
             am_run <= 1'b0;
-        end else if (qs == Q_DECODE && op_e'(imem_rdata[3:0]) == OP_ARGMAX) begin   // `ins` updates this cycle
+        end else if (qs == Q_DECODE && op_e'(imem_rdata[3:0]) == OP_ARGMAX) begin
             am_run <= 1'b1;
             am_i   <= '0;
         end else if (am_run) begin
@@ -176,7 +178,8 @@ module npu_core
         end else begin
             unique case (qs)
                 Q_IDLE: if (start) begin
-                    pc     <= '0;
+                    pc      <= '0;
+                    ib_base <= '0;
                     cycles <= '0;
                     fb     <= '0;
                     qs     <= Q_FETCH;
@@ -195,7 +198,6 @@ module npu_core
                 end
 
                 Q_DECODE: begin
-                    ins <= instr_t'(imem_rdata);
                     qs  <= Q_WAIT;
                     unique case (op_e'(imem_rdata[3:0]))
                         OP_CONV, OP_DWCONV: begin
@@ -225,8 +227,9 @@ module npu_core
                 Q_PAUSE: if (resume) qs <= Q_NEXT;
 
                 Q_NEXT: begin
-                    pc <= pc + IMEM_AW'(1);
-                    qs <= Q_FETCH;
+                    pc      <= pc + IMEM_AW'(1);
+                    ib_base <= ib_base + IB_AW'(IMEM_BEATS);
+                    qs      <= Q_FETCH;
                 end
 
                 default: qs <= Q_IDLE;

@@ -1,10 +1,10 @@
-// npu_pool: MAXPOOL and AVGPOOL on channel-blocked activations (8 lanes per word).
+// npu_pool: MAXPOOL on channel-blocked activations (8 lanes per word).
 //
 // For each output pixel and channel block: read the k x k window (one word per cycle,
-// out-of-bounds taps skipped), reduce per lane, then
-//   MAXPOOL: max                          AVGPOOL (TFLite reference int8):
-//                                         q = sign(s) * ((|s| + n/2) / n), n = in-bounds taps
-// and clamp to [act_min, act_max]. The division is an 8-lane restoring divider (16 cycles).
+// out-of-bounds taps skipped), take the per-lane max, clamp to [act_min, act_max] and write.
+// (AVGPOOL is lowered by the compiler to a ones-weight DWCONV.)
+// Addresses are incremental; the input row stride in_w * in_cb is formed by shift-and-add
+// at the start of the instruction (S_MUL).
 
 `default_nettype none
 
@@ -14,7 +14,9 @@ module npu_pool
     input  wire logic              clk,
     input  wire logic              rst,
     input  wire logic              start,
-    input  wire instr_t            ins,
+    /* verilator lint_off UNUSEDSIGNAL */
+    input  wire instr_t            ins,           // held by the sequencer while the unit runs
+    /* verilator lint_on UNUSEDSIGNAL */
     output      logic              done,
     output      logic [ACT_AW-1:0] act_raddr,
     input  wire logic [WORD_W-1:0] act_rdata,
@@ -23,52 +25,46 @@ module npu_pool
     output      logic [WORD_W-1:0] act_wdata
 );
 
-    typedef enum logic [2:0] {S_IDLE, S_INIT, S_TAPS, S_TAIL, S_DIV, S_WRITE, S_NEXT, S_DONE} state_e;
+    typedef enum logic [2:0] {S_IDLE, S_INIT, S_MUL, S_TAPS, S_TAIL, S_WRITE, S_DONE} state_e;
     state_e state;
 
-    /* verilator lint_off UNUSEDSIGNAL */
-    instr_t I;                      // each unit uses a subset of the fields
-    /* verilator lint_on UNUSEDSIGNAL */
-    logic        is_avg;
-    logic [13:0] p, n_pix;
     logic [6:0]  oy, ox;
     logic [5:0]  cb;
     logic [2:0]  ky, kx;
+    logic [12:0] RS;                // in_w * in_cb
+    logic [12:0] m_a;               // shift-and-add operands
+    logic [5:0]  m_b;
+    logic [2:0]  m_cnt;
 
-    // current tap address
-    logic signed [9:0] iy, ix;
+    // window corner of the current output pixel: wy = oy*stride - pad (wx likewise) and its
+    // word address (in_base + (wy*in_w + wx)*in_cb, possibly out of range); row start too
+    logic signed [9:0]  wy, wx, iy, ix;
+    logic signed [19:0] c_addr, r_addr, t_addr, t_row;
+    logic [ACT_AW-1:0]  w_addr;     // output word: out_base + p*in_cb + cb
     logic              inb;
     always_comb begin
-        iy  = 10'(signed'({3'b0, oy}) * signed'({8'b0, I.stride})) + 10'(ky) - 10'(I.pad);
-        ix  = 10'(signed'({3'b0, ox}) * signed'({8'b0, I.stride})) + 10'(kx) - 10'(I.pad);
-        inb = iy >= 0 && iy < 10'(I.in_h) && ix >= 0 && ix < 10'(I.in_w);
-        act_raddr = ACT_AW'(24'(I.in_base)
-                    + (24'(unsigned'(iy)) * 24'(I.in_w) + 24'(unsigned'(ix))) * 24'(I.in_cb) + 24'(cb));
+        iy  = wy + 10'(ky);
+        ix  = wx + 10'(kx);
+        inb = iy >= 0 && iy < 10'(ins.in_h) && ix >= 0 && ix < 10'(ins.in_w);
+        act_raddr = ACT_AW'(t_addr);
     end
+
+    function automatic logic [19:0] mul3(input logic [12:0] a, input logic [2:0] b);
+        return (b[0] ? 20'(a) : 20'd0) + (b[1] ? 20'(a) << 1 : 20'd0) + (b[2] ? 20'(a) << 2 : 20'd0);
+    endfunction
 
     logic        d_valid, d_inb, last_tap;
     logic signed [7:0]  lane_max [N];
-    logic signed [15:0] lane_sum [N];
-    logic [5:0]  cnt;
 
-    // divider state
-    logic [15:0] num  [N];
-    logic [6:0]  rem  [N];
-    logic [7:0]  quo  [N];
-    logic [4:0]  dstep;
-
-    assign last_tap = (ky == I.ksize - 3'd1) && (kx == I.ksize - 3'd1);
+    assign last_tap = (ky == ins.ksize - 3'd1) && (kx == ins.ksize - 3'd1);
 
     always_comb begin
         act_we    = (state == S_WRITE);
-        act_waddr = ACT_AW'(24'(I.out_base) + 24'(p) * 24'(I.in_cb) + 24'(cb));
+        act_waddr = w_addr;
         for (int l = 0; l < N; l++) begin
-            logic signed [8:0] v;
-            if (is_avg) v = lane_sum[l] < 0 ? -9'(quo[l]) : 9'(quo[l]);
-            else        v = 9'(lane_max[l]);
-            if (v < 9'(I.act_min))      act_wdata[8*l +: 8] = I.act_min;
-            else if (v > 9'(I.act_max)) act_wdata[8*l +: 8] = I.act_max;
-            else                        act_wdata[8*l +: 8] = 8'(v);
+            if (lane_max[l] < ins.act_min)      act_wdata[8*l +: 8] = ins.act_min;
+            else if (lane_max[l] > ins.act_max) act_wdata[8*l +: 8] = ins.act_max;
+            else                                act_wdata[8*l +: 8] = lane_max[l];
         end
     end
 
@@ -82,30 +78,44 @@ module npu_pool
                 logic signed [7:0] x;
                 x = 8'(act_rdata >> (8 * l));
                 if (x > lane_max[l]) lane_max[l] <= x;
-                lane_sum[l] <= lane_sum[l] + 16'(x);
             end
-            cnt <= cnt + 6'd1;
         end
 
         if (rst) begin
             state <= S_IDLE;
         end else begin
             unique case (state)
-                S_IDLE: if (start) begin
-                    I <= ins;
-                    state <= S_INIT;
-                end
+                S_IDLE: if (start) state <= S_INIT;
 
                 S_INIT: begin
-                    is_avg <= (I.op == OP_AVGPOOL);
-                    n_pix <= 14'(I.out_h) * 14'(I.out_w);
-                    p  <= '0; oy <= '0; ox <= '0; cb <= '0; ky <= '0; kx <= '0;
-                    cnt <= '0;
-                    for (int l = 0; l < N; l++) begin
-                        lane_max[l] <= -8'sd128;
-                        lane_sum[l] <= '0;
+                    oy <= '0; ox <= '0; cb <= '0; ky <= '0; kx <= '0;
+                    for (int l = 0; l < N; l++) lane_max[l] <= -8'sd128;
+                    RS    <= '0;
+                    m_a   <= 13'(ins.in_w);
+                    m_b   <= ins.in_cb;
+                    m_cnt <= '0;
+                    state <= S_MUL;
+                end
+
+                // RS = in_cb * in_w (6 steps), then the first pixel's corner
+                S_MUL: begin
+                    m_cnt <= m_cnt + 3'd1;
+                    if (m_cnt != 3'd6) begin
+                        if (m_b[0]) RS <= RS + m_a;
+                        m_a <= m_a << 1;
+                        m_b <= m_b >> 1;
+                    end else begin
+                        logic signed [19:0] c0;
+                        c0 = 20'(ins.in_base) - 20'(mul3(RS, ins.pad)) - 20'(mul3(13'(ins.in_cb), ins.pad));
+                        wy     <= -10'(ins.pad);
+                        wx     <= -10'(ins.pad);
+                        c_addr <= c0;
+                        r_addr <= c0;
+                        t_addr <= c0;
+                        t_row  <= c0;
+                        w_addr <= ACT_AW'(ins.out_base);
+                        state  <= S_TAPS;
                     end
-                    state <= S_TAPS;
                 end
 
                 S_TAPS: begin
@@ -113,71 +123,53 @@ module npu_pool
                     d_inb   <= inb;
                     if (last_tap) begin
                         state <= S_TAIL;
-                    end else if (kx == I.ksize - 3'd1) begin
-                        kx <= '0;
-                        ky <= ky + 3'd1;
+                    end else if (kx == ins.ksize - 3'd1) begin
+                        kx     <= '0;
+                        ky     <= ky + 3'd1;
+                        t_row  <= t_row + 20'(RS);
+                        t_addr <= t_row + 20'(RS);
                     end else begin
-                        kx <= kx + 3'd1;
+                        kx     <= kx + 3'd1;
+                        t_addr <= t_addr + 20'(ins.in_cb);
                     end
                 end
 
-                S_TAIL: begin
-                    // last word is reduced this cycle
-                    state <= S_DIV;
-                    dstep <= '0;
-                end
+                // the last word is reduced this cycle
+                S_TAIL: state <= S_WRITE;
 
-                S_DIV: begin
-                    if (!is_avg) begin
-                        state <= S_WRITE;
-                    end else if (dstep == 5'd0) begin
-                        // dividend |s| + n/2, quotient bits from the MSB down
-                        for (int l = 0; l < N; l++) begin
-                            num[l] <= 16'(lane_sum[l] < 0 ? -lane_sum[l] : lane_sum[l]) + 16'(cnt >> 1);
-                            rem[l] <= '0;
-                            quo[l] <= '0;
-                        end
-                        dstep <= 5'd1;
-                    end else begin
-                        for (int l = 0; l < N; l++) begin
-                            logic [7:0] r;
-                            r = {rem[l], num[l][15]};
-                            if (r >= 8'(cnt)) begin
-                                rem[l] <= 7'(r - 8'(cnt));
-                                quo[l] <= {quo[l][6:0], 1'b1};
-                            end else begin
-                                rem[l] <= 7'(r);
-                                quo[l] <= {quo[l][6:0], 1'b0};
-                            end
-                            num[l] <= num[l] << 1;
-                        end
-                        dstep <= dstep + 5'd1;
-                        if (dstep == 5'd16) state <= S_WRITE;
-                    end
-                end
-
-                S_WRITE: state <= S_NEXT;
-
-                S_NEXT: begin
-                    ky <= '0; kx <= '0; cnt <= '0;
-                    for (int l = 0; l < N; l++) begin
-                        lane_max[l] <= -8'sd128;
-                        lane_sum[l] <= '0;
-                    end
-                    if (cb == I.in_cb - 6'd1) begin
+                // write this block's result and move on: next block, or next pixel
+                S_WRITE: begin
+                    logic signed [19:0] c;
+                    logic [5:0] nb;
+                    nb = (cb == ins.in_cb - 6'd1) ? 6'd0 : cb + 6'd1;
+                    w_addr <= w_addr + ACT_AW'(1);
+                    ky <= '0; kx <= '0;
+                    for (int l = 0; l < N; l++) lane_max[l] <= -8'sd128;
+                    c = c_addr;
+                    state <= S_TAPS;
+                    if (cb == ins.in_cb - 6'd1) begin
                         cb <= '0;
-                        if (p == n_pix - 14'd1) begin
+                        if (oy == ins.out_h - 7'd1 && ox == ins.out_w - 7'd1) begin
                             state <= S_DONE;
+                        end else if (ox == ins.out_w - 7'd1) begin
+                            ox <= '0;
+                            oy <= oy + 7'd1;
+                            wx <= -10'(ins.pad);
+                            wy <= wy + 10'(ins.stride);
+                            c  = r_addr + 20'(mul3(RS, {1'b0, ins.stride}));
+                            r_addr <= c;
                         end else begin
-                            p  <= p + 14'd1;
-                            ox <= (ox == I.out_w - 7'd1) ? 7'd0 : ox + 7'd1;
-                            oy <= (ox == I.out_w - 7'd1) ? oy + 7'd1 : oy;
-                            state <= S_TAPS;
+                            ox <= ox + 7'd1;
+                            wx <= wx + 10'(ins.stride);
+                            c  = c_addr + 20'(mul3(13'(ins.in_cb), {1'b0, ins.stride}));
                         end
+                        c_addr <= c;
                     end else begin
                         cb <= cb + 6'd1;
-                        state <= S_TAPS;
                     end
+                    // the next taps start at the corner of the (new) pixel, plus the block
+                    t_addr <= c + 20'(nb);
+                    t_row  <= c + 20'(nb);
                 end
 
                 S_DONE: begin

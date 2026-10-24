@@ -7,7 +7,7 @@ package npu_pkg;
     /* verilator lint_off UNUSEDPARAM */
     localparam int N          = 8;
     localparam int DATA_W     = 8;
-    localparam int ACC_W      = 32;
+    localparam int ACC_W      = 26;
     localparam int WORD_W     = N * DATA_W;   // activation / weight word
     localparam int ACT_DEPTH  = 7168;
     localparam int EXT_DEPTH  = 65536;

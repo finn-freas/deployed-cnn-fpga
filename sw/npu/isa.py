@@ -16,7 +16,7 @@ from enum import IntEnum
 # ---------------------------------------------------------------- machine parameters
 N = 8                 # systolic array is N x N; also channels per activation/weight word
 DATA_W = 8            # int8 operands
-ACC_W = 32            # int32 accumulators
+ACC_W = 26            # accumulators: |sum| <= K_MAX * 128 * 128 = 2^24 fits 26 bits signed
 ACT_DEPTH = 7168      # activation memory, 64-bit words (packed input lives here too); 7 x 1K
                       # so it maps onto 28 BSRAMs. VWW's peak is 6912 words.
 EXT_DEPTH = 65536     # external store (flash/SDRAM): weights + params, 64-bit words
@@ -64,6 +64,7 @@ FIELDS = [
                               # starting at byte in_base*8 of activation memory
 ]
 assert sum(w for _, w, _ in FIELDS) <= INSTR_W
+assert K_MAX * 128 * 128 < 1 << (ACC_W - 1), "accumulators must hold K_MAX int8 products"
 
 
 @dataclass
