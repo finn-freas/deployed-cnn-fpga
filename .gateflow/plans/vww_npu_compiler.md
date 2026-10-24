@@ -143,8 +143,12 @@ vww01, and board power from a USB power meter (energy per inference).
   ones-weight DWCONV (pool unit MAXPOOL-only); units read the sequencer's instruction;
   and a depthwise mode with *no line buffer*: the array keeps only its row skew, so row r
   needs exactly the word arriving from activation memory, and each tap is issued with the
-  read of its word (stride 2 reads even columns before odd ones). Demand 21.4k → 15.4k
-  (74%); the analytical placer now converges.
+  read of its word (stride 2 reads even columns before odd ones). Demand 21.4k → 15.6k
+  (75%); the analytical placer now converges.
+- **Full core places and routes (2026-10-24):** GW2AR-18, LUT4 14,759 (71%), ALU 4,582,
+  DFF 8,263 (53%), BSRAM 43/46, DSP 64 MULT9 + 2 MULT36, LUT RAM 74. **Fmax 63.3 MHz**
+  post-route (target 25.2). VWW 264,036 cycles = 10.5 ms @ 25.2 MHz, 4.2 ms at 63 MHz.
+  Next: board top (flash loader, run, LEDs/HDMI), then clock up with a PLL.
 
 ## Milestones
 
