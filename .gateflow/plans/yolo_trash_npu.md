@@ -115,8 +115,9 @@ flowchart LR
 |----|------|-------|--------|------------|
 | Y-1 | PyTorch → INT8 TFLite export of YOLOv5 (Keras 3 vs yolov5's TF port) | Med | High | Try yolov5 `export.py`, then onnx2tf, then ai-edge-torch; decide in M0 |
 | Y-2 | Accuracy loss: n vs s, 320 vs 640, ReLU, INT8 | High | Med | Measure each step separately; distillation from YOLOv5s; 416 input if time allows |
-| Y-3 | SDRAM controller on GW2AR's in-package SDRAM | Med | High | Start from a known open design; dedicated sim model + HW test early |
+| Y-3 | SDRAM controller on GW2AR's in-package SDRAM **with the open-source flow** | Med | High | Evidence so far: SDRAM works on this board in many projects (NESTang, NEORV32, an INT8 GEMM accelerator), but all use Gowin EDA. apicula documents the GW2AR-18 SDRAM pin map, and nextpnr-himbaechel accepted and placed the internal `IOL/IOR` pins (2026-10-23 probe). Still unproven on hardware. **Fallback:** synthesize with the free Gowin EDA Education edition and keep the open-source simulation flow. Test SDRAM first thing in M7 (or earlier as a standalone test) |
 | Y-4 | BSRAM pressure (tile buffers + CPU + video) | Med | Med | Tile sizes are a compiler parameter; frame buffer in SDRAM |
+| Y-7 | Logic fit: 8×8 NPU + RISC-V + SDRAM/DMA + video + YOLO ops in 20.7K LUT | Med | High | The closest public design fits 6×8 PEs + SDRAM DMA on this chip (no CPU/video). Run a synthesis probe early in M3. Fallbacks: 8×4 array (2× slower, still seconds per photo), smaller CPU (or FSM-only post-processing) |
 | Y-5 | Scope: SDRAM + CPU + new ops is several times the MNIST design | High | High | Strict milestones; M1 and M2 are useful even if hardware stalls |
 | Y-6 | TFLite rounding variants in ADD / CONCAT / etc. | Med | Med | Same per-op measurement method that found the conv/FC difference |
 
