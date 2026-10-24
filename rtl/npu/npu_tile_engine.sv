@@ -238,10 +238,13 @@ module npu_tile_engine
     logic signed [15:0] d_lo, d_hi;
     logic [WORD_W-1:0] w0;          // packed: first aligned word of the window
 
-    // double-buffered transposer (both modes). Packed array on purpose: it is read N ways at
-    // once (one column of bytes per cycle), so as an unpacked array synthesis would infer a
-    // multi-port LUT RAM and replicate it per read port; as a vector it is plain flip-flops.
-    logic [1:0][N-1:0][WORD_W-1:0] tb;
+    // double-buffered N x N byte transposer (both modes): rows are written one per cycle,
+    // columns read one per cycle. Byte (row r, column c) lives in byte RAM (r + c) mod N at
+    // {buffer, r}, so a row write and a column read each touch every RAM exactly once
+    // (rotated by r, resp. c): eight small LUT RAMs instead of 2*N*N bytes of registers.
+    logic        tb_we;
+    logic [WORD_W-1:0] tb_wdata;    // row d_r of the block being filled
+    logic [7:0]  tb_q [N];          // RAM k's byte of the column being written out
     logic        tb_sel;            // buffer being filled
     logic        wo_active, wo_buf;
     logic        wo_half, wo_lastu;  // A_T half of the block being written; last block of its unit
@@ -263,10 +266,20 @@ module npu_tile_engine
     end
 
     always_comb begin
+        tb_we    = d_v && (!pk_mode || d_ph);
+        tb_wdata = pk_mode ? pk_row : (d_pad ? {N{I.in_zp}} : act_rdata);
+    end
+    for (genvar k = 0; k < N; k++) begin : g_tb
+        logic [7:0] ram [2 * N];
+        always_ff @(posedge clk)
+            if (tb_we) ram[{tb_sel, d_r}] <= 8'(tb_wdata >> (8 * 3'(3'(k) - d_r)));
+        assign tb_q[k] = ram[{wo_buf, 3'(3'(k) - wo_cnt)}];
+    end
+
+    always_comb begin
         at_we    = wo_active;
         at_waddr = {wo_half, KA_AW'({wo_kw, wo_cnt})};
-        at_wdata = '0;
-        for (int r = 0; r < N; r++) at_wdata[8 * r +: 8] = 8'(tb[wo_buf][r] >> (8 * wo_cnt));
+        for (int r = 0; r < N; r++) at_wdata[8 * r +: 8] = tb_q[3'(3'(r) + wo_cnt)];
     end
 
     logic gather_last, krow_end;
@@ -473,8 +486,7 @@ module npu_tile_engine
 
         // ---- gather data landing: one row word per (k-word, row), then the transposer
         if (d_v && pk_mode && !d_ph) w0 <= act_rdata;
-        if (d_v && (!pk_mode || d_ph)) begin
-            tb[tb_sel][d_r] <= pk_mode ? pk_row : (d_pad ? {N{I.in_zp}} : act_rdata);
+        if (tb_we) begin
             if (d_r == 3'(N - 1)) begin
                 tb_sel    <= !tb_sel;
                 wo_active <= 1'b1;
