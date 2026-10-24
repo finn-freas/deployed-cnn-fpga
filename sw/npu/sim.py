@@ -23,12 +23,9 @@ SEQ_PER_INSTR = 2                  # sequencer fetch/next, counted in the run to
 TILE_SETUP = N                     # per-row pixel coordinates
 GATHER_TAIL_WORD = 2 + N           # last word lands, transposer writes its N columns
 GATHER_TAIL_PACKED = 2             # last byte lands
-PARAMS = N + 1
-FLUSH = 3 * (N - 1) + 3 + 1        # FLUSH_N + 1
-DRAIN = N * N
-DRAIN_TAIL = 4 + 3                 # requant latency + 3
-GROUP_FIXED = PARAMS + 1 + FLUSH + DRAIN + DRAIN_TAIL + 1   # + K (stream); last term = NEXT_GROUP
-NEXT_TILE = 1
+DRAIN_DELAY = 3                    # npu_tile_engine: capture -> first shadow read
+PERIOD_MIN = DRAIN_DELAY + N * N + 1   # min cycles between injections
+DRAIN_DONE = DRAIN_DELAY + N * N + 4 + 2   # capture -> drain + requant pipeline empty
 
 # External store (rtl/sim/ext_mem_model.sv defaults, as instantiated by npu_sim_top)
 EXT_LATENCY = 6
@@ -38,6 +35,48 @@ EXT_CYCLES_PER_WORD = 2
 def ext_load_cycles(words: int) -> int:
     """Request handshake + latency + burst, until the engine sees the last word."""
     return EXT_LATENCY + 5 - EXT_CYCLES_PER_WORD + words * EXT_CYCLES_PER_WORD
+
+
+def tile_engine_cycles(*, K: int, G: int, tiles: int, gather: int, dw: bool, cached: bool,
+                       param_words: int, weight_words: int) -> int:
+    """Cycle-level replica of npu_tile_engine's control FSM (overlapped drain, O3).
+
+    `gather` is the per-gather issue + tail time. Injections (a job's first value, or a
+    capture wave) must be PERIOD_MIN cycles apart; a wait state lasts at least 1 cycle.
+    """
+    t = 0
+    last_inj = -10**9
+
+    def wait():                     # S_INJ_WAIT / S_CAP_WAIT: pass once t >= last_inj + PERIOD_MIN
+        nonlocal t
+        t = max(t, last_inj + PERIOD_MIN) + 1
+
+    def inject_and(n):              # injection issues in cycle t; state lasts n cycles
+        nonlocal t, last_inj
+        last_inj = t
+        t += n
+
+    t += 1 + ext_load_cycles(param_words)                     # S_INIT, params
+    loads = 1 if cached else G
+    for lg in range(loads):
+        t += ext_load_cycles(weight_words if cached else K)   # S_WLOAD_REQ / S_WLOAD
+        for tile in range(tiles):
+            t += TILE_SETUP
+            groups = G if cached else 1
+            for gi in range(groups):
+                if gi == 0 or dw:
+                    t += gather                               # S_GATHER + S_GATHER_TAIL
+                wait()
+                inject_and(K)                                 # S_STREAM
+                t += 1                                        # S_NEXT
+                if cached and not dw and gi < groups - 1:
+                    continue                                  # next job captures implicitly
+                wait()
+                inject_and(1)                                 # S_CAPTURE
+                t += 1                                        # S_AFTER_CAP
+    # S_FINISH: until the last capture's drain and requant pipeline are empty
+    t = max(t, last_inj + DRAIN_DONE) + 1
+    return t + INSTR_OVERHEAD - 1
 
 
 def total_cycles(stats: "Stats", n_instrs: int) -> int:
@@ -179,16 +218,9 @@ class NpuSim:
             gather = N * K + GATHER_TAIL_PACKED
         else:            # one word per cycle through the transposer
             gather = N * (K // N) + GATHER_TAIL_WORD
-        params = ext_load_cycles(G * N * isa.PARAM_WORDS)
-        if G * K <= isa.WBUF_DEPTH:
-            # cached: whole layer's weights once; tile-outer, A reused across groups
-            per_tile = TILE_SETUP + gather + G * (GROUP_FIXED + K) + NEXT_TILE
-            cycles = params + ext_load_cycles(G * K) + tiles * per_tile
-        else:
-            # group mode: per group, load its weights and sweep all tiles (no NEXT_GROUP state)
-            per_tile = TILE_SETUP + gather + (GROUP_FIXED - 1 + K) + NEXT_TILE
-            cycles = params + G * (ext_load_cycles(K) + tiles * per_tile)
-        self.stats.cycles.append(cycles + INSTR_OVERHEAD)
+        self.stats.cycles.append(tile_engine_cycles(
+            K=K, G=G, tiles=tiles, gather=gather, dw=False, cached=G * K <= isa.WBUF_DEPTH,
+            param_words=G * N * isa.PARAM_WORDS, weight_words=G * K))
         self.stats.macs.append(P * real_k * G * N)
 
     def _dwconv(self, ins: Instr):
@@ -203,9 +235,9 @@ class NpuSim:
         # depthwise weights always fit the weight buffer (cached).
         tiles = -(-P // N)
         assert cb * T <= isa.WBUF_DEPTH
-        per_tile = TILE_SETUP + cb * (N * T + GATHER_TAIL_WORD + GROUP_FIXED + T * N) + NEXT_TILE
-        cycles = ext_load_cycles(cb * N * isa.PARAM_WORDS) + ext_load_cycles(cb * T) + tiles * per_tile
-        self.stats.cycles.append(cycles + INSTR_OVERHEAD)
+        self.stats.cycles.append(tile_engine_cycles(
+            K=T * N, G=cb, tiles=tiles, gather=N * T + GATHER_TAIL_WORD, dw=True, cached=True,
+            param_words=cb * N * isa.PARAM_WORDS, weight_words=cb * T))
         self.stats.macs.append(P * T * cb * N)
 
     def _maxpool(self, ins: Instr):

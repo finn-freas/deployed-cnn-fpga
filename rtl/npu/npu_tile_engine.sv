@@ -11,9 +11,17 @@
 //     Word-mode gathers (channel-blocked input) pass through a double-buffered N x N
 //     byte transposer at one word per cycle; packed-mode gathers (uint8 HWC input in
 //     activation memory) assemble each A_T word from N bytes, one per cycle.
-// Per output group: PARAMS -> CLEAR -> STREAM k=0..K-1 -> FLUSH -> DRAIN (requant).
-// DWCONV runs as a CONV over one channel block with block-diagonal weights expanded on
-// the fly from the compact depthwise weights, re-gathering per channel block.
+//
+// Compute (O3, overlapped drain): a "job" is one output group of one tile, streamed as
+// K values with the first one flagged. The flagged value moves every PE's finished sum
+// into its shadow register as it passes, so jobs stream back to back while a separate
+// drain unit reads the previous job's shadows through requant into activation memory.
+// When the next thing to do is a gather (new tile, or a depthwise channel block), a
+// one-cycle zero-valued capture wave is injected instead, so the drain overlaps the
+// gather. Injections are spaced at least PERIOD_MIN cycles apart so a shadow is never
+// overwritten before the drain has read it. DWCONV runs as a CONV over one channel
+// block with block-diagonal weights expanded on the fly from the compact depthwise
+// weights, re-gathering per channel block.
 
 `default_nettype none
 
@@ -40,14 +48,23 @@ module npu_tile_engine
     input  wire logic [WORD_W-1:0]   ext_rdata
 );
 
-    localparam int KA_AW   = $clog2(K_MAX);              // A_T address
-    localparam int FLUSH_N = 3 * (N - 1) + 3;            // array latency + margin
-    localparam int RQ_LAT  = 4;                          // npu_requant latency
+    localparam int KA_AW       = $clog2(K_MAX);      // A_T address
+    localparam int RQ_LAT      = 4;                  // npu_requant latency
+    // Timing (injection issued in cycle i reaches PE(r,c) in cycle i+1+r+c):
+    //   the drain's first read is in cycle i+DRAIN_DELAY+1 and it reads PE(r,c) N*r+c cycles
+    //   later, which is after that PE captured as long as DRAIN_DELAY >= 1;
+    //   a later injection in cycle i2 overwrites PE(r,c)'s shadow in cycle i2+1+r+c, so it
+    //   must wait until i2 > i+DRAIN_DELAY+(N-1)*r for every r; and since that injection
+    //   also hands the next job to the drain, this drain's N*N reads (cycles i+DRAIN_DELAY+1
+    //   .. i+DRAIN_DELAY+N*N) must be finished: i2 >= i + DRAIN_DELAY + N*N + 1.
+    localparam int DRAIN_DELAY = 3;
+    localparam int PERIOD_MIN  = DRAIN_DELAY + N * N + 1;
+    localparam int DQ          = RQ_LAT + 1;         // drain issue -> requant output
 
     typedef enum logic [4:0] {
         S_IDLE, S_INIT, S_PLOAD_REQ, S_PLOAD, S_WLOAD_REQ, S_WLOAD, S_TILE_SETUP,
-        S_GATHER, S_GATHER_TAIL, S_PARAMS, S_CLEAR, S_STREAM, S_FLUSH, S_DRAIN,
-        S_DRAIN_TAIL, S_NEXT_GROUP, S_NEXT_TILE, S_DONE
+        S_GATHER, S_GATHER_TAIL, S_INJ_WAIT, S_STREAM, S_NEXT, S_CAP_WAIT, S_CAPTURE,
+        S_AFTER_CAP, S_FINISH, S_DONE
     } state_e;
     state_e state;
 
@@ -65,6 +82,9 @@ module npu_tile_engine
     logic [13:0] tile_p0;
     logic [6:0]  tile_oy, tile_ox, next_oy, next_ox;
     logic [5:0]  g;
+    logic        last_tile, last_group;
+    assign last_tile  = (tile_p0 + 14'(N)) >= P;
+    assign last_group = (g == I.out_g - 6'd1);
 
     // ---------------------------------------------------------------- external loads
     logic [16:0] ld_cnt, ld_len;
@@ -154,7 +174,7 @@ module npu_tile_engine
                 b = !d_real ? 8'd0 : (d_pad ? I.in_zp : 8'(act_rdata >> (8 * d_lane)) + I.in_zp);
                 w[8 * d_r +: 8] = b;
                 at_we    = (d_r == 3'(N - 1));
-                at_waddr = KA_AW'(d_k);
+                at_waddr = d_k;
                 at_wdata = w;
             end
         end else if (wo_active) begin
@@ -164,56 +184,57 @@ module npu_tile_engine
         end
     end
 
-    // ---------------------------------------------------------------- params
-    logic signed [31:0]        prm_bias  [N];
-    logic signed [31:0]        prm_mult  [N];
-    logic signed [SHIFT_W-1:0] prm_shift [N];
-    logic [3:0] pj;
-    logic       pj_valid;
-    logic [2:0] pj_d;
-
-    // ---------------------------------------------------------------- stream / array
+    // ---------------------------------------------------------------- injection / array
     logic [10:0] sk;
-    logic        st_valid;
+    logic        st_valid, st_first, st_zero;   // registered: aligned with buffer read data
     logic [2:0]  st_sel;
-    logic        arr_clear;
+    logic [7:0]  since_inj;         // cycles since the last injection was issued (saturating)
+    logic        inj_now;           // an injection (job's first value or capture wave) issues
     logic signed [DATA_W-1:0] arr_a [N];
     logic signed [DATA_W-1:0] arr_b [N];
-    logic signed [ACC_W-1:0]  arr_acc [N][N];
-    logic [5:0]  fcnt;
+    logic signed [ACC_W-1:0]  arr_shadow [N][N];
 
     always_comb begin
-        for (int r = 0; r < N; r++) arr_a[r] = DATA_W'(at_rdata >> (8 * r));
+        for (int r = 0; r < N; r++) arr_a[r] = st_zero ? '0 : DATA_W'(at_rdata >> (8 * r));
         for (int c = 0; c < N; c++) begin
-            if (is_dw) arr_b[c] = (3'(c) == st_sel) ? DATA_W'(wb_rdata >> (8 * c)) : '0;
-            else       arr_b[c] = DATA_W'(wb_rdata >> (8 * c));
+            if (st_zero)    arr_b[c] = '0;
+            else if (is_dw) arr_b[c] = (3'(c) == st_sel) ? DATA_W'(wb_rdata >> (8 * c)) : '0;
+            else            arr_b[c] = DATA_W'(wb_rdata >> (8 * c));
         end
     end
 
-    npu_array u_array (.clk, .clear(arr_clear), .valid(st_valid), .a(arr_a), .b(arr_b), .acc(arr_acc));
+    npu_array u_array (.clk, .valid(st_valid), .first(st_first), .a(arr_a), .b(arr_b),
+                       .shadow(arr_shadow));
 
-    // ---------------------------------------------------------------- drain / requant
-    logic [6:0]  didx;
-    logic signed [ACC_W-1:0]   rq_acc;
-    logic signed [31:0]        rq_bias, rq_mult;
-    logic signed [SHIFT_W-1:0] rq_shift;
-    logic signed [7:0]         rq_out;
-    logic [RQ_LAT:0] tag_v;
-    logic [5:0]      tag_i [RQ_LAT+1];
-    logic [WORD_W-9:0] row_word;    // bytes 0..N-2 of the pixel being drained
-    logic [5:0] d_ti;
+    // ---------------------------------------------------------------- drain (concurrent)
+    // pending: the job streamed last, whose result the next injection captures
+    logic        pend_valid;
+    logic [13:0] pend_p0;
+    logic [5:0]  pend_g;
+    // the job being drained
+    logic        dr_busy;
+    logic [1:0]  dr_wait;
+    logic        dr_run;
+    logic [6:0]  dr_idx;
+    logic [13:0] dr_p0;
+    logic [5:0]  dr_g;
+    // issue stage -> requant pipeline tags
+    logic signed [ACC_W-1:0] dr_sh;                 // selected shadow, registered
+    logic [DQ-1:0]           tq_v;
+    logic [2:0]              tq_c   [DQ];
+    logic                    tq_wr  [DQ];           // last byte of a valid pixel
+    logic [ACT_AW-1:0]       tq_adr [DQ];
+    logic signed [7:0]       rq_out;
+    logic [WORD_W-9:0]       row_word;              // bytes 0..N-2 of the pixel being drained
 
     npu_requant u_rq (
-        .clk, .acc(rq_acc), .bias(rq_bias), .mult(rq_mult), .shift(rq_shift), .rmode(I.rmode),
+        .clk, .acc(dr_sh), .bias(32'(pb_rdata)), .mult(32'(pb_rdata >> 32)),
+        .shift(SHIFT_W'(pb_rdata >> 64)), .rmode(I.rmode),
         .out_zp(I.out_zp), .act_min(I.act_min), .act_max(I.act_max), .out(rq_out));
 
-    assign d_ti = tag_i[RQ_LAT];
-
     always_comb begin
-        logic [13:0] p;
-        p = tile_p0 + 14'(d_ti[5:3]);
-        act_we    = tag_v[RQ_LAT] && (d_ti[2:0] == 3'(N - 1)) && (p < P);
-        act_waddr = ACT_AW'(24'(I.out_base) + 24'(p) * 24'(I.out_g) + 24'(g));
+        act_we    = tq_v[DQ-1] && tq_wr[DQ-1];
+        act_waddr = tq_adr[DQ-1];
         act_wdata = {rq_out, row_word};
     end
 
@@ -223,7 +244,7 @@ module npu_tile_engine
         else if (is_dw) wb_raddr = WBUF_AW'(24'(g) * 24'(taps) + 24'(sk >> 3));
         else            wb_raddr = WBUF_AW'(24'(g) * 24'(K) + 24'(sk));
         at_raddr = KA_AW'(sk);
-        pb_raddr = PBUF_AW'(16'(g) * 16'(N) + 16'(pj[2:0]));
+        pb_raddr = PBUF_AW'(16'(dr_g) * 16'(N) + 16'(dr_idx[2:0]));               // drain
         // external loads land in the buffers
         wb_we    = ext_rvalid && (state == S_WLOAD);
         wb_waddr = WBUF_AW'(ld_cnt);
@@ -236,15 +257,19 @@ module npu_tile_engine
     logic gather_last;
     assign gather_last = (gr == 3'(N - 1)) && (gk == (pk_mode ? K - 11'd1 : 11'(KW) - 11'd1));
     always_comb KW = 8'(K >> 3);
+    assign inj_now = (state == S_STREAM && sk == '0) || state == S_CAPTURE;
+
+    // what follows a capture wave
+    typedef enum logic [1:0] {A_GATHER_SAME_TILE, A_NEXT_TILE, A_NEXT_GROUP_LOAD, A_FINISH} after_e;
+    after_e after_cap;
 
     always_ff @(posedge clk) begin
-        done      <= 1'b0;
-        arr_clear <= 1'b0;
-        d_v       <= 1'b0;
-        pj_valid  <= 1'b0;
-        st_valid  <= 1'b0;
-        tag_v     <= {tag_v[RQ_LAT-1:0], 1'b0};
-        for (int i = RQ_LAT; i > 0; i--) tag_i[i] <= tag_i[i-1];
+        done     <= 1'b0;
+        d_v      <= 1'b0;
+        st_valid <= 1'b0;
+        st_first <= 1'b0;
+        st_zero  <= 1'b0;
+        if (since_inj != 8'hFF) since_inj <= since_inj + 8'd1;
 
         // ---- gather data landing
         if (d_v) begin
@@ -272,19 +297,62 @@ module npu_tile_engine
             if (!ld_cnt[0]) p_word0 <= ext_rdata;
         end
 
-        // ---- params landing
-        if (pj_valid) begin
-            prm_bias[pj_d]  <= 32'(pb_rdata);
-            prm_mult[pj_d]  <= 32'(pb_rdata >> 32);
-            prm_shift[pj_d] <= SHIFT_W'(pb_rdata >> 64);
+        // ---- injection bookkeeping: hand the pending job to the drain
+        if (inj_now) begin
+            since_inj <= '0;
+            if (pend_valid) begin
+                dr_busy <= 1'b1;
+                dr_wait <= 2'(DRAIN_DELAY - 1);
+                dr_run  <= 1'b0;
+                dr_p0   <= pend_p0;
+                dr_g    <= pend_g;
+            end
+            pend_valid <= (state == S_STREAM);
+            pend_p0    <= tile_p0;
+            pend_g     <= g;
         end
-        if (tag_v[RQ_LAT] && d_ti[2:0] != 3'(N - 1)) row_word[8 * d_ti[2:0] +: 8] <= rq_out;
+
+        // ---- drain: wait DRAIN_DELAY, then issue N*N shadow reads (row-major)
+        tq_v <= {tq_v[DQ-2:0], 1'b0};
+        for (int i = DQ - 1; i > 0; i--) begin
+            tq_c[i]   <= tq_c[i-1];
+            tq_wr[i]  <= tq_wr[i-1];
+            tq_adr[i] <= tq_adr[i-1];
+        end
+        if (dr_busy && !inj_now) begin
+            if (!dr_run) begin
+                if (dr_wait == 0) begin
+                    dr_run <= 1'b1;
+                    dr_idx <= '0;
+                end else begin
+                    dr_wait <= dr_wait - 2'd1;
+                end
+            end else begin
+                logic [13:0] p;
+                p = dr_p0 + 14'(dr_idx[5:3]);
+                dr_sh     <= arr_shadow[dr_idx[5:3]][dr_idx[2:0]];
+                tq_v[0]   <= 1'b1;
+                tq_c[0]   <= dr_idx[2:0];
+                tq_wr[0]  <= (dr_idx[2:0] == 3'(N - 1)) && (p < P);
+                tq_adr[0] <= ACT_AW'(24'(I.out_base) + 24'(p) * 24'(I.out_g) + 24'(dr_g));
+                dr_idx    <= dr_idx + 7'd1;
+                if (dr_idx == 7'(N * N - 1)) begin
+                    dr_busy <= 1'b0;
+                    dr_run  <= 1'b0;
+                end
+            end
+        end
+        if (tq_v[DQ-1] && tq_c[DQ-1] != 3'(N - 1)) row_word[8 * tq_c[DQ-1] +: 8] <= rq_out;
 
         if (rst) begin
-            state     <= S_IDLE;
-            tag_v     <= '0;
-            wo_active <= 1'b0;
-            ext_req   <= 1'b0;
+            state      <= S_IDLE;
+            wo_active  <= 1'b0;
+            ext_req    <= 1'b0;
+            dr_busy    <= 1'b0;
+            dr_run     <= 1'b0;
+            pend_valid <= 1'b0;
+            tq_v       <= '0;
+            since_inj  <= 8'hFF;
         end else begin
             unique case (state)
                 S_IDLE: if (start) begin
@@ -308,12 +376,13 @@ module npu_tile_engine
                         K <= 11'(I.ksize) * 11'(I.ksize) * 11'(I.in_cb) * 11'(N);
                         layer_words <= 17'(I.out_g) * 17'(I.ksize) * 17'(I.ksize) * 17'(I.in_cb) * 17'(N);
                     end
-                    P       <= 14'(I.out_h) * 14'(I.out_w);
-                    tile_p0 <= '0;
-                    tile_oy <= '0;
-                    tile_ox <= '0;
-                    g       <= '0;
-                    state   <= S_PLOAD_REQ;
+                    P          <= 14'(I.out_h) * 14'(I.out_w);
+                    tile_p0    <= '0;
+                    tile_oy    <= '0;
+                    tile_ox    <= '0;
+                    g          <= '0;
+                    pend_valid <= 1'b0;
+                    state      <= S_PLOAD_REQ;
                 end
 
                 // ---------------- load the layer's params
@@ -398,106 +467,75 @@ module npu_tile_engine
                     end
                 end
 
-                S_GATHER_TAIL: if (!d_v && !wo_active) begin
-                    pj    <= '0;
-                    state <= S_PARAMS;
-                end
+                S_GATHER_TAIL: if (!d_v && !wo_active) state <= S_INJ_WAIT;
 
-                // ---------------- params of group g from the param buffer
-                S_PARAMS: begin
-                    if (pj == 4'(N)) begin
-                        state <= S_CLEAR;
-                    end else begin
-                        pj_valid <= 1'b1;
-                        pj_d     <= pj[2:0];
-                        pj       <= pj + 4'd1;
-                    end
-                end
-
-                S_CLEAR: begin
-                    arr_clear <= 1'b1;
-                    sk        <= '0;
-                    state     <= S_STREAM;
+                // ---------------- stream one job; its first value is an injection
+                S_INJ_WAIT: if (since_inj >= 8'(PERIOD_MIN - 1)) begin
+                    sk    <= '0;
+                    state <= S_STREAM;
                 end
 
                 S_STREAM: begin
                     st_valid <= 1'b1;
+                    st_first <= (sk == '0);
                     st_sel   <= sk[2:0];
-                    if (sk == K - 11'd1) begin
-                        fcnt  <= '0;
-                        state <= S_FLUSH;
+                    if (sk == K - 11'd1) state <= S_NEXT;
+                    else                 sk <= sk + 11'd1;
+                end
+
+                S_NEXT: begin
+                    if (cached && !is_dw && !last_group) begin
+                        // next group of the same tile reuses A: its first value captures this job
+                        g     <= g + 6'd1;
+                        state <= S_INJ_WAIT;
                     end else begin
-                        sk <= sk + 11'd1;
+                        state <= S_CAP_WAIT;
+                        if (is_dw && !last_group)  after_cap <= A_GATHER_SAME_TILE;
+                        else if (!last_tile)       after_cap <= A_NEXT_TILE;
+                        else if (!cached && !last_group) after_cap <= A_NEXT_GROUP_LOAD;
+                        else                       after_cap <= A_FINISH;
                     end
                 end
 
-                S_FLUSH: begin
-                    fcnt <= fcnt + 6'd1;
-                    if (fcnt == 6'(FLUSH_N)) begin
-                        didx  <= '0;
-                        state <= S_DRAIN;
-                    end
+                // ---------------- zero-valued capture wave, so the drain overlaps what follows
+                S_CAP_WAIT: if (since_inj >= 8'(PERIOD_MIN - 1)) state <= S_CAPTURE;
+
+                S_CAPTURE: begin
+                    st_valid <= 1'b1;
+                    st_first <= 1'b1;
+                    st_zero  <= 1'b1;
+                    state    <= S_AFTER_CAP;
                 end
 
-                S_DRAIN: begin
-                    rq_acc   <= arr_acc[didx[5:3]][didx[2:0]];
-                    rq_bias  <= prm_bias[didx[2:0]];
-                    rq_mult  <= prm_mult[didx[2:0]];
-                    rq_shift <= prm_shift[didx[2:0]];
-                    tag_v[0] <= 1'b1;
-                    tag_i[0] <= didx[5:0];
-                    if (didx == 7'(N * N - 1)) begin
-                        fcnt  <= '0;
-                        state <= S_DRAIN_TAIL;
-                    end
-                    didx <= didx + 7'd1;
-                end
-
-                S_DRAIN_TAIL: begin
-                    fcnt <= fcnt + 6'd1;
-                    if (fcnt == 6'(RQ_LAT + 2)) state <= cached ? S_NEXT_GROUP : S_NEXT_TILE;
-                end
-
-                // cached mode: groups inside the tile loop
-                S_NEXT_GROUP: begin
-                    if (g == I.out_g - 6'd1) begin
-                        state <= S_NEXT_TILE;
-                    end else begin
-                        g <= g + 6'd1;
-                        if (is_dw) begin
-                            // depthwise: A depends on the channel block, so gather again
+                S_AFTER_CAP: begin
+                    unique case (after_cap)
+                        A_GATHER_SAME_TILE: begin
+                            g     <= g + 6'd1;
                             state <= S_GATHER;
                             gr <= '0; gk <= '0; ky <= '0; kx <= '0; kc <= '0;
-                        end else begin
-                            pj    <= '0;
-                            state <= S_PARAMS;
                         end
-                    end
-                end
-
-                S_NEXT_TILE: begin
-                    if (tile_p0 + 14'(N) >= P) begin
-                        if (cached || g == I.out_g - 6'd1) begin
-                            state <= S_DONE;
-                        end else begin
-                            // group mode: next group, back to the first tile
+                        A_NEXT_TILE: begin
+                            tile_p0 <= tile_p0 + 14'(N);
+                            tile_oy <= next_oy;
+                            tile_ox <= next_ox;
+                            if (cached) g <= '0;
+                            state <= S_TILE_SETUP;
+                            sr    <= '0;
+                            cy    <= next_oy;
+                            cx    <= next_ox;
+                        end
+                        A_NEXT_GROUP_LOAD: begin
                             g       <= g + 6'd1;
                             tile_p0 <= '0;
                             tile_oy <= '0;
                             tile_ox <= '0;
                             state   <= S_WLOAD_REQ;
                         end
-                    end else begin
-                        tile_p0 <= tile_p0 + 14'(N);
-                        tile_oy <= next_oy;
-                        tile_ox <= next_ox;
-                        if (cached) g <= '0;
-                        state <= S_TILE_SETUP;
-                        sr    <= '0;
-                        cy    <= next_oy;
-                        cx    <= next_ox;
-                    end
+                        default: state <= S_FINISH;
+                    endcase
                 end
+
+                S_FINISH: if (!dr_busy && !(|tq_v)) state <= S_DONE;
 
                 S_DONE: begin
                     done  <= 1'b1;
