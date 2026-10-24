@@ -65,21 +65,37 @@ def tile_engine_cycles(*, K: int, G: int, tiles: int, gather_issue: int, gather_
     p_t = t + 1                         # producer: first P_WAIT_BUF cycle
     c_t = t + 1                         # consumer: first C_WAIT_FULL cycle
     last_inj = -10**9
-    for u, (_, _, new_tile, wload) in enumerate(units):
+    # group-mode weight loader: group g's load ends (last L_LOAD cycle) at load_end[g]; it may
+    # start once the previous load is done and its buffer half is free (group g-2 finished
+    # with the half-buffer prefetch, g-1 without it)
+    wdbl = K <= isa.WBUF_DEPTH // 2
+    load_end = {-1: t}                  # t = first S_RUN cycle - 1 ... (run_start seen at t)
+    group_done = {}                     # cycle the consumer's "group finished" is visible
+
+    def load_visible(g):
+        if g not in load_end:
+            load_visible(g - 1)
+            free_g = g - (2 if wdbl else 1)
+            permit = group_done[free_g] if free_g >= 0 else 0
+            start = max(load_end[g - 1] + 1, permit) + 1                # L_IDLE -> L_REQ
+            load_end[g] = start + ext_load_cycles(K) - 1
+        return load_end[g] + 1
+
+    for u, (ti, g, new_tile, wload) in enumerate(units):
         # ---- producer gathers unit u into half u % 2
         w = max(p_t, release[u - 2] if u >= 2 else 0)        # P_WAIT_BUF passes
         e = w + (TILE_SETUP if new_tile else 0) + gather_issue + gather_tail   # last P_TAIL cycle
         ready[u] = e + 1
         p_t = e + 1
-        # ---- consumer streams unit u
-        s = max(c_t, ready[u]) + 1                            # C_WAIT_FULL passes
-        if wload:
-            s += ext_load_cycles(K)                           # C_WLOAD_REQ / C_WLOAD
+        # ---- consumer streams unit u (group mode: once its group's weights have landed)
+        s = max(c_t, ready[u], load_visible(g) if not cached else 0) + 1   # C_WAIT_FULL passes
         for _ in range(jobs_per_unit):
             inj = max(s, last_inj + PERIOD_MIN) + 1           # C_INJ_WAIT passes; C_STREAM
             last_inj = inj
             s = inj + K + 1                                   # stream K, C_NEXT
         release[u] = s                                        # released in the last C_NEXT
+        if not cached and ti == tiles - 1:
+            group_done[g] = s
         c_t = s
     cap = max(c_t, last_inj + PERIOD_MIN) + 1                 # C_CAP_WAIT; C_CAPTURE
     t = cap + 2                                               # C_DONE seen; S_FINISH

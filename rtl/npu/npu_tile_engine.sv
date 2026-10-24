@@ -201,17 +201,29 @@ module npu_tile_engine
 
     // ---------------------------------------------------------------- consumer (stream)
     typedef enum logic [3:0] {
-        C_IDLE, C_WAIT_FULL, C_WLOAD_REQ, C_WLOAD, C_INJ_WAIT, C_STREAM, C_NEXT, C_CAP_WAIT,
-        C_CAPTURE, C_DONE
+        C_IDLE, C_WAIT_FULL, C_INJ_WAIT, C_STREAM, C_NEXT, C_CAP_WAIT, C_CAPTURE, C_DONE
     } cstate_e;
     cstate_e cstate;
     logic        sbuf;              // A_T half being streamed
     logic [13:0] c_p0;              // current unit's tile
     logic [5:0]  c_g;               // current job's output group
     logic        c_last_unit;
-    logic [5:0]  loaded_g;          // group whose weights are in the buffer (group mode)
     logic        c_last_job;
     assign c_last_job = !(cached && !is_dw) || (c_g == I.out_g - 6'd1);
+
+    // ---------------------------------------------------------------- weight loader (group mode)
+    // Loads output groups' weights in order while the consumer streams. With K <= half the
+    // buffer (wdbl), group g goes to half g%2 and group g+1 is prefetched during group g;
+    // otherwise one group at a time into the whole buffer.
+    typedef enum logic [1:0] {L_IDLE, L_REQ, L_LOAD} lstate_e;
+    lstate_e lstate;
+    logic       wdbl;
+    logic [6:0] lg;                 // next group to load
+    logic [6:0] loaded_cnt;         // groups whose weights have fully landed
+    logic [6:0] cons_done;          // groups the consumer has finished
+    logic       l_ok;               // the target half is free
+    assign wdbl = (K <= 11'(WBUF_DEPTH / 2));
+    assign l_ok = (lg < 7'(I.out_g)) && (lg < cons_done + (wdbl ? 7'd2 : 7'd1));
 
     logic [10:0] sk;
     logic        st_valid, st_first, st_zero;   // registered: aligned with buffer read data
@@ -264,19 +276,19 @@ module npu_tile_engine
 
     // ---------------------------------------------------------------- buffer addressing
     always_comb begin
-        if (!cached)    wb_raddr = WBUF_AW'(sk);                                  // group mode (CONV)
+        if (!cached)    wb_raddr = wdbl ? {c_g[0], (WBUF_AW-1)'(sk)} : WBUF_AW'(sk);   // group mode
         else if (is_dw) wb_raddr = WBUF_AW'(24'(c_g) * 24'(taps) + 24'(sk >> 3));
         else            wb_raddr = WBUF_AW'(24'(c_g) * 24'(K) + 24'(sk));
         at_raddr = {sbuf, KA_AW'(sk)};
         pb_raddr = PBUF_AW'(16'(dr_g) * 16'(N) + 16'(dr_idx[2:0]));               // drain
         // external loads land in the buffers
         wb_we    = ext_rvalid && w_loading;
-        wb_waddr = WBUF_AW'(ld_cnt);
+        wb_waddr = (!cached && wdbl) ? {lg[0], (WBUF_AW-1)'(ld_cnt)} : WBUF_AW'(ld_cnt);
         pb_we    = ext_rvalid && (state == S_PLOAD) && ld_cnt[0];
         pb_waddr = PBUF_AW'(ld_cnt >> 1);
         pb_wdata = {SHIFT_W'(ext_rdata), p_word0[63:32], p_word0[31:0]};
     end
-    assign w_loading = (state == S_WLOAD) || (cstate == C_WLOAD);
+    assign w_loading = (state == S_WLOAD) || (lstate == L_LOAD);
     assign inj_now   = (cstate == C_STREAM && sk == '0) || cstate == C_CAPTURE;
 
     // ---------------------------------------------------------------- sequential logic
@@ -366,6 +378,7 @@ module npu_tile_engine
             state      <= S_IDLE;
             pstate     <= P_IDLE;
             cstate     <= C_IDLE;
+            lstate     <= L_IDLE;
             wo_active  <= 1'b0;
             ext_req    <= 1'b0;
             dr_busy    <= 1'b0;
@@ -573,35 +586,17 @@ module npu_tile_engine
             // ======================================================== consumer
             unique case (cstate)
                 C_IDLE: if (run_start) begin
-                    sbuf     <= 1'b0;
-                    loaded_g <= 6'h3F;
-                    cstate   <= C_WAIT_FULL;
+                    sbuf      <= 1'b0;
+                    cons_done <= '0;
+                    cstate    <= C_WAIT_FULL;
                 end
 
-                C_WAIT_FULL: if (full[sbuf]) begin
+                // a gathered unit, and (group mode) its group's weights
+                C_WAIT_FULL: if (full[sbuf] && (cached || loaded_cnt > 7'(unit_g[sbuf]))) begin
                     c_p0        <= unit_p0[sbuf];
                     c_g         <= (cached && !is_dw) ? 6'd0 : unit_g[sbuf];
                     c_last_unit <= unit_last[sbuf];
-                    if (!cached && unit_g[sbuf] != loaded_g) cstate <= C_WLOAD_REQ;
-                    else                                     cstate <= C_INJ_WAIT;
-                end
-
-                // group mode: load this group's weights (the previous job has finished streaming)
-                C_WLOAD_REQ: begin
-                    ext_req  <= 1'b1;
-                    ext_addr <= EXT_AW'(24'(I.w_base) + 24'(c_g) * 24'(K));
-                    ext_len  <= 16'(K);
-                    ld_len   <= 17'(K);
-                    ld_cnt   <= '0;
-                    if (ext_req && ext_ack) begin
-                        ext_req <= 1'b0;
-                        cstate  <= C_WLOAD;
-                    end
-                end
-
-                C_WLOAD: if (ld_cnt == ld_len) begin
-                    loaded_g <= c_g;
-                    cstate   <= C_INJ_WAIT;
+                    cstate      <= C_INJ_WAIT;
                 end
 
                 C_INJ_WAIT: if (since_inj >= 8'(PERIOD_MIN - 1)) begin
@@ -625,6 +620,8 @@ module npu_tile_engine
                         full[sbuf] <= 1'b0;              // A_T half free for the producer
                         sbuf       <= !sbuf;
                         cstate     <= c_last_unit ? C_CAP_WAIT : C_WAIT_FULL;
+                        // group mode: the group's last tile frees its weight-buffer half
+                        if (!cached && (c_p0 + 14'(N)) >= P) cons_done <= cons_done + 7'd1;
                     end
                 end
 
@@ -641,6 +638,38 @@ module npu_tile_engine
                 C_DONE: if (state == S_FINISH) cstate <= C_IDLE;
 
                 default: cstate <= C_IDLE;
+            endcase
+
+            // ======================================================== weight loader
+            unique case (lstate)
+                L_IDLE: begin
+                    if (run_start) begin
+                        lg         <= '0;
+                        loaded_cnt <= '0;
+                    end else if (state == S_RUN && !cached && l_ok) begin
+                        lstate <= L_REQ;
+                    end
+                end
+
+                L_REQ: begin
+                    ext_req  <= 1'b1;
+                    ext_addr <= EXT_AW'(24'(I.w_base) + 24'(lg) * 24'(K));
+                    ext_len  <= 16'(K);
+                    ld_len   <= 17'(K);
+                    ld_cnt   <= '0;
+                    if (ext_req && ext_ack) begin
+                        ext_req <= 1'b0;
+                        lstate  <= L_LOAD;
+                    end
+                end
+
+                L_LOAD: if (ld_cnt == ld_len) begin
+                    loaded_cnt <= lg + 7'd1;
+                    lg         <= lg + 7'd1;
+                    lstate     <= L_IDLE;
+                end
+
+                default: lstate <= L_IDLE;
             endcase
         end
     end
