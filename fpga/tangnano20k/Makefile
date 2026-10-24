@@ -11,6 +11,7 @@ TOP    ?= colorbars_top
 TAG    ?=
 BUILD  := build/$(TOP)$(TAG)
 NEXTPNR_ARGS ?=                 # e.g. --placer sa, --threads 8
+SYNTH_ARGS ?=                   # e.g. -nodsp
 CST    := tangnano20k.cst
 DEVICE := GW2AR-LV18QN88C8/I7
 FAMILY := GW2A-18C
@@ -43,6 +44,8 @@ NPU_SRCS := \
 
 # Synthesis-only resource probe of the NPU core (not a functional board design)
 SRCS_npu_probe_top := $(NPU_SRCS) npu_probe_top.sv
+SRCS_dsp_probe_top := dsp_probe_top.sv
+SRCS_npu_probe_small_top := $(NPU_SRCS) npu_probe_small_top.sv
 
 SRCS := $(SRCS_$(TOP))
 
@@ -55,7 +58,7 @@ $(BUILD)/$(TOP)-synth.json: $(SRCS) $(VENDOR_SRCS)
 	$(ENV) yosys -m slang -q -l $(BUILD)/yosys.log -p "\
 		read_verilog -sv $(VENDOR_SRCS); \
 		read_slang --top $(TOP) $(SRCS); \
-		synth_gowin -top $(TOP) -family gw2a -json $@"
+		synth_gowin -top $(TOP) -family gw2a $(SYNTH_ARGS) -json $@"
 
 $(BUILD)/$(TOP)-pnr.json: $(BUILD)/$(TOP)-synth.json $(CST)
 	$(ENV) nextpnr-himbaechel --json $< --write $@ --device $(DEVICE) \

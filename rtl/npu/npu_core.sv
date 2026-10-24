@@ -12,7 +12,9 @@
 
 module npu_core
     import npu_pkg::*;
-(
+#(
+    parameter int ACT_MEM = ACT_DEPTH   // physical activation words (probes may shrink it)
+) (
     input  wire logic                clk,
     input  wire logic                rst,
     // control
@@ -77,9 +79,10 @@ module npu_core
     logic [ACT_AW-1:0] act_raddr, act_waddr;
     logic [WORD_W-1:0] act_rdata, act_wdata;
     logic              act_we;
-    sdpram #(.W(WORD_W), .D(ACT_DEPTH)) u_act (
-        .clk, .we(act_we), .waddr(act_waddr), .wdata(act_wdata),
-        .raddr(act_raddr), .rdata(act_rdata));
+    localparam int ACT_PA = $clog2(ACT_MEM);
+    sdpram #(.W(WORD_W), .D(ACT_MEM)) u_act (
+        .clk, .we(act_we), .waddr(ACT_PA'(act_waddr)), .wdata(act_wdata),
+        .raddr(ACT_PA'(act_raddr)), .rdata(act_rdata));
     assign dbg_rdata = act_rdata;
 
     // ---------------------------------------------------------------- execution units
