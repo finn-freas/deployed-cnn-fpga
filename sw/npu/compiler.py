@@ -20,6 +20,12 @@ from .quant import (INT32_MAX, INT32_MIN, RMODE_DOUBLE, RMODE_SINGLE, effective_
 
 # TFLite reference-kernel rounding per op, measured against BUILTIN_REF (see quant.py).
 RMODE = {"conv": RMODE_DOUBLE, "fc": RMODE_SINGLE, "dwconv": RMODE_DOUBLE}
+RMODE_NAMES = {"double": RMODE_DOUBLE, "single": RMODE_SINGLE}
+
+
+def layer_rmode(L: dict, kind: str) -> int:
+    """The layer's own rounding (L["rmode"], set by front ends other than TFLite), else TFLite's."""
+    return RMODE_NAMES[L["rmode"]] if "rmode" in L else RMODE[kind]
 
 
 def ceil_div(a, b):
@@ -101,6 +107,11 @@ def avgpool_multiplier(n: int) -> tuple[int, int] | None:
     return (mult, shift) if np.array_equal(got, ref) else None
 
 
+def check_single(prog: Program, rmode: int, n: int, name: str):
+    if rmode == RMODE_SINGLE and any(s > 0 for _, _, s in prog.params[-n:]):
+        raise NotImplementedError(f"{name}: single rounding needs scale < 1 (shift <= 0)")
+
+
 class ActAllocator:
     """Ping-pong placement: each output goes at the opposite end of memory from its input."""
 
@@ -160,7 +171,10 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
             raise NotImplementedError("the first layer must be a CONV (it reads the packed input)")
         out_g = ceil_div(oc, N)
         base = alloc.place(oh * ow * out_g, (cur["base"], cur["base"] + cur["words"]))
-        amin, amax = act_range(L.get("act", "none"), L["out_zp"], L["out_scale"])
+        if "act_min" in L:              # explicit clamp (e.g. ONNX Clip), in output codes
+            amin, amax = L["act_min"], L["act_max"]
+        else:
+            amin, amax = act_range(L.get("act", "none"), L["out_zp"], L["out_scale"])
         common = dict(in_base=cur["base"], out_base=base, in_h=ih, in_w=iw, out_h=oh, out_w=ow,
                       out_g=out_g, stride=L["stride"], pad=L.get("pad", 0), in_zp=L["in_zp"],
                       out_zp=L["out_zp"], act_min=amin, act_max=amax, comment=L["name"])
@@ -193,9 +207,8 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
             scales = [effective_scale(L["in_scale"], s, L["out_scale"]) for s in w_scale]
             p_base = prog.add_params(b, w.reshape(w.shape[0], -1).sum(1), L["in_zp"], scales,
                                      out_g * N)
-            rmode = RMODE["fc" if L.get("from_fc") else "conv"]
-            if rmode == RMODE_SINGLE and any(s > 0 for _, _, s in prog.params[-out_g * N:]):
-                raise NotImplementedError(f"{L['name']}: single rounding needs scale < 1 (shift <= 0)")
+            rmode = layer_rmode(L, "fc" if L.get("from_fc") else "conv")
+            check_single(prog, rmode, out_g * N, L["name"])
             prog.instrs.append(Instr(Op.CONV, in_cb=ins.in_cb, in_src=ins.in_src, ksize=k,
                                      w_base=w_base, p_base=p_base, rmode=rmode, **common))
         elif L["op"] == "dwconv":
@@ -213,30 +226,54 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
             w_base = prog.add_weights(rows, L["name"])
             scales = [effective_scale(L["in_scale"], s, L["out_scale"]) for s in w_scale]
             p_base = prog.add_params(b, w.reshape(w.shape[0], -1).sum(1), L["in_zp"], scales, cb * N)
+            rmode = layer_rmode(L, "dwconv")
+            check_single(prog, rmode, cb * N, L["name"])
             prog.instrs.append(Instr(Op.DWCONV, in_cb=cb, ksize=k, w_base=w_base, p_base=p_base,
-                                     rmode=RMODE["dwconv"], **common))
+                                     rmode=rmode, **common))
         elif L["op"] == "maxpool":
             assert out_g == cur["cb"]
             prog.instrs.append(Instr(Op.MAXPOOL, in_cb=cur["cb"], ksize=L["k"], **common))
         elif L["op"] == "avgpool":
-            # Lowered to DWCONV: ones weights, no zero-point folding (input and output share
-            # quantization), single-rounding requant by 1/n. Needs every window fully inside
-            # the input (constant n) and a multiplier that reproduces the division exactly.
+            # Window sum, requantized by s_in / (n * s_out) around the zero points. TFLite
+            # (equal input/output quantization) needs a multiplier that reproduces its integer
+            # division exactly; L["approx"] (ONNX, float rounding) takes the nearest one.
             cb, k = cur["cb"], L["k"]
             n = k * k
-            inside = L.get("pad", 0) == 0 and (oh - 1) * L["stride"] + k <= ih \
-                and (ow - 1) * L["stride"] + k <= iw
             stride = 1 if oh == ow == 1 else L["stride"]
-            mq = avgpool_multiplier(n) if inside else None
-            if mq is None or not 2 <= k <= 3 or stride not in (1, 2):
-                raise NotImplementedError(f"{L['name']}: AVGPOOL needs a {k}x{k} window inside the "
-                                          f"input, k <= 3, stride 1/2 (or 1x1 output) and odd k*k")
-            # uniform: one param entry and one channel block's weights serve every channel
-            w_base = prog.add_weights(np.ones((n, N), np.int64), L["name"])
-            p_base = prog.add_raw_params([(0, *mq)])
-            common.update(stride=stride, pad=0, in_zp=0, out_zp=0)
-            prog.instrs.append(Instr(Op.DWCONV, in_cb=cb, ksize=k, w_base=w_base, p_base=p_base,
-                                     rmode=RMODE_SINGLE, uniform=1, **common))
+            if L.get("pad", 0) or (oh - 1) * stride + k > ih or (ow - 1) * stride + k > iw:
+                raise NotImplementedError(f"{L['name']}: AVGPOOL windows must lie inside the input")
+            same_q = L["in_scale"] == L["out_scale"] and L["in_zp"] == L["out_zp"]
+            mq = avgpool_multiplier(n) if same_q else None
+            if mq is not None:
+                param, zin, zout = (0, *mq), 0, 0       # mean of the raw codes
+            elif L.get("approx"):
+                m, sh = quantize_multiplier(L["in_scale"] / (n * L["out_scale"]))
+                param, zin, zout = (-n * L["in_zp"], m, sh), 0, L["out_zp"]
+            else:
+                raise NotImplementedError(f"{L['name']}: no multiplier reproduces TFLite's "
+                                          f"AVGPOOL division for a {k}x{k} window (needs odd k*k)")
+            rmode = RMODE_SINGLE if param[2] <= 0 else RMODE_DOUBLE
+            common.update(stride=stride, pad=0, in_zp=zin, out_zp=zout)
+            if 2 <= k <= 3 and stride in (1, 2):
+                # depthwise unit, uniform: one param entry and one channel block's weights
+                w_base = prog.add_weights(np.ones((n, N), np.int64), L["name"])
+                p_base = prog.add_raw_params([param])
+                prog.instrs.append(Instr(Op.DWCONV, in_cb=cb, ksize=k, w_base=w_base, p_base=p_base,
+                                         rmode=rmode, uniform=1, **common))
+            else:
+                # larger windows (global pooling): a CONV with an identity matrix per tap
+                ins = Instr(Op.CONV, in_cb=cb, ksize=k)
+                K = ins.K
+                if K > isa.K_MAX:
+                    raise NotImplementedError(f"{L['name']}: {k}x{k} AVGPOOL over {ic} channels "
+                                              f"needs K={K} > K_MAX={isa.K_MAX}")
+                wp = np.zeros((cb * N, k, k, cb * N), np.int64)
+                wp[np.arange(ic), :, :, np.arange(ic)] = 1
+                rows = wp.reshape(out_g, N, K).transpose(0, 2, 1).reshape(out_g * K, N)
+                w_base = prog.add_weights(rows, L["name"])
+                p_base = prog.add_raw_params([param] * ic + [(0, 0, 0)] * (cb * N - ic))
+                prog.instrs.append(Instr(Op.CONV, in_cb=cb, ksize=k, w_base=w_base, p_base=p_base,
+                                         rmode=rmode, **common))
         else:
             raise NotImplementedError(L["op"])
 
