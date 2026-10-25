@@ -29,7 +29,8 @@ module status_cdc (
     output      logic [15:0] d_res_count
 );
     /* verilator lint_off UNUSEDSIGNAL */
-    logic unused_src = s_clk ^ s_rst;   // no source-side logic
+    logic unused_src;
+    assign unused_src = s_clk ^ s_rst;  // no source-side logic
     /* verilator lint_on UNUSEDSIGNAL */
 
     logic [2:0] tog, f_bt, f_be, f_bz;
