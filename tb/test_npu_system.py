@@ -3,8 +3,8 @@
 Boots the VWW program and demo image from flash, checks the first result and the
 thumbnail, then sends another image over the UART and checks the reply.
 NPU_SYSTEM_MODEL=mnist|vww picks the model (default vww). Without the TFLite golden data
-(build/, needs TensorFlow) the committed ONNX models are compiled with npuc instead and the
-simulator provides the expected results.
+(build/, needs TensorFlow) the committed IR in models/ir is compiled instead, on random
+images, and the simulator provides the expected results.
 """
 
 import os
@@ -63,13 +63,9 @@ def load_case():
         last = prog.meta["layers"][-1]["name"]
         return prog, gold["images"][:2], [gold[last][i].reshape(-1) for i in range(2)]
     from npu.sim import NpuSim
-    from npuc.onnx_frontend import import_onnx
-    if MODEL == "mnist":
-        prog = compile_ir(*import_onnx(ROOT / "models" / "onnx" / "mnist_cnn_int8.onnx"))
-        images = np.load(ROOT / "models" / "onnx" / "mnist_test.npz")["images"][:2]
-    else:   # tf2onnx's conversion of the VWW model: identical images to the TFLite path
-        prog = compile_ir(*import_onnx(ROOT / "models" / "vww" / "vww_96_int8.onnx", rounding="tflite"))
-        images = np.random.default_rng(0).integers(0, 256, (2, 96, 96, 3)).astype(np.uint8)
+    prog = compile_ir(*load_ir(ROOT / "models" / "ir" / MODEL))
+    h, w, c = prog.meta["input"]["h"], prog.meta["input"]["w"], prog.meta["input"]["c"]
+    images = np.random.default_rng(0).integers(0, 256, (2, h, w, c)).astype(np.uint8)
     last = prog.meta["layers"][-1]
     logits = []
     for img in images:

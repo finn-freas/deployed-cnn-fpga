@@ -1,0 +1,142 @@
+{
+  "source": "mnist_int8.tflite",
+  "input": {
+    "tensor": 0,
+    "shape": [
+      28,
+      28,
+      1
+    ],
+    "scale": 0.003921568859368563,
+    "zp": -128
+  },
+  "output": {
+    "tensor": 18
+  },
+  "layers": [
+    {
+      "name": "L0_conv_2d",
+      "in_tensor": 0,
+      "out_tensor": 10,
+      "in_shape": [
+        28,
+        28,
+        1
+      ],
+      "out_shape": [
+        28,
+        28,
+        8
+      ],
+      "in_scale": 0.003921568859368563,
+      "in_zp": -128,
+      "out_scale": 0.012123139575123787,
+      "out_zp": -128,
+      "op": "conv",
+      "kh": 3,
+      "kw": 3,
+      "stride": 1,
+      "pad": 1,
+      "act": "relu"
+    },
+    {
+      "name": "L1_max_pool_2d",
+      "in_tensor": 10,
+      "out_tensor": 11,
+      "in_shape": [
+        28,
+        28,
+        8
+      ],
+      "out_shape": [
+        14,
+        14,
+        8
+      ],
+      "in_scale": 0.012123139575123787,
+      "in_zp": -128,
+      "out_scale": 0.012123139575123787,
+      "out_zp": -128,
+      "op": "maxpool",
+      "k": 2,
+      "stride": 2,
+      "pad": 0,
+      "act": "none"
+    },
+    {
+      "name": "L2_conv_2d",
+      "in_tensor": 11,
+      "out_tensor": 12,
+      "in_shape": [
+        14,
+        14,
+        8
+      ],
+      "out_shape": [
+        14,
+        14,
+        16
+      ],
+      "in_scale": 0.012123139575123787,
+      "in_zp": -128,
+      "out_scale": 0.0341104231774807,
+      "out_zp": -128,
+      "op": "conv",
+      "kh": 3,
+      "kw": 3,
+      "stride": 1,
+      "pad": 1,
+      "act": "relu"
+    },
+    {
+      "name": "L3_max_pool_2d",
+      "in_tensor": 12,
+      "out_tensor": 13,
+      "in_shape": [
+        14,
+        14,
+        16
+      ],
+      "out_shape": [
+        7,
+        7,
+        16
+      ],
+      "in_scale": 0.0341104231774807,
+      "in_zp": -128,
+      "out_scale": 0.0341104231774807,
+      "out_zp": -128,
+      "op": "maxpool",
+      "k": 2,
+      "stride": 2,
+      "pad": 0,
+      "act": "none"
+    },
+    {
+      "name": "L4_fully_connected",
+      "in_tensor": 13,
+      "out_tensor": 18,
+      "in_shape": [
+        7,
+        7,
+        16
+      ],
+      "out_shape": [
+        1,
+        1,
+        10
+      ],
+      "in_scale": 0.0341104231774807,
+      "in_zp": -128,
+      "out_scale": 0.25148841738700867,
+      "out_zp": 50,
+      "op": "conv",
+      "kh": 7,
+      "kw": 7,
+      "stride": 1,
+      "pad": 0,
+      "act": "none",
+      "from_fc": true
+    }
+  ]
+}

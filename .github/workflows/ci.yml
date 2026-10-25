@@ -11,7 +11,7 @@ env:
 
 jobs:
   software:
-    name: Compiler, simulator, npuc
+    name: Compiler and simulator
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -21,19 +21,17 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-sim.txt
       - run: pip install -r requirements-sim.txt
-      - name: Unit tests (ISA, TFLite-exact requant, npuc vs onnxruntime)
+      - name: Unit tests (ISA, TFLite-exact requant, compiler + simulator)
         run: cd sw && python -m pytest -q tests
-      - name: Compile the example models
+      - name: Compile VWW
         run: |
           cd sw
-          python -m npuc ../models/onnx/mnist_cnn_int8.onnx -o ../build/npuc/mnist \
-            --images ../models/onnx/mnist_test.npz --verify 200
-          python -m npuc ../models/vww/vww_96_int8.onnx -o ../build/npuc/vww --rounding tflite --verify 3
-          cat ../build/npuc/vww/report.md >> "$GITHUB_STEP_SUMMARY"
+          python -m npu.compiler ../models/ir/vww --out ../build/npu_vww > ../build/compile.log
+          tail -1 ../build/compile.log >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
-          name: npuc-reports
-          path: build/npuc/*/report.md
+          name: vww-program
+          path: build/npu_vww
 
   rtl:
     name: RTL (Verilator + cocotb)
@@ -53,7 +51,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Lint
         run: make lint TOOLS=
-      - name: cocotb tests (random networks, ONNX models, board system over flash and SDRAM)
+      - name: cocotb tests (random networks, board system over flash and SDRAM)
         run: cd tb && python -m pytest -q -ra
 
   bitstream:

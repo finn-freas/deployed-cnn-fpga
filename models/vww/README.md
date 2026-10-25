@@ -12,10 +12,3 @@ Files copied unmodified from [mlcommons/tiny](https://github.com/mlcommons/tiny)
 | `y_labels.csv` | `benchmark/evaluation/datasets/vww01/y_labels.csv` (1000-image accuracy set: file, classes, label) |
 
 MobileNetV1 (width 0.25), 96×96×3 int8 input, 210,850 parameters, 7.49 M MACs.
-
-`vww_96_int8.onnx` is derived from `vww_96_int8.tflite` (not upstream), converted with
-tf2onnx 1.17.0:
-
-    python -m tf2onnx.convert --tflite vww_96_int8.tflite --output vww_96_int8.onnx --opset 17
-
-`npuc --rounding tflite` compiles it to the same NPU images as the TFLite path.

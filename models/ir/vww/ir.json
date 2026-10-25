@@ -1,0 +1,744 @@
+{
+  "source": "vww_96_int8.tflite",
+  "input": {
+    "tensor": 0,
+    "shape": [
+      96,
+      96,
+      3
+    ],
+    "scale": 0.003921568859368563,
+    "zp": -128
+  },
+  "output": {
+    "tensor": 88,
+    "softmax_dropped": true
+  },
+  "layers": [
+    {
+      "name": "L0_conv_2d",
+      "in_tensor": 0,
+      "out_tensor": 58,
+      "in_shape": [
+        96,
+        96,
+        3
+      ],
+      "out_shape": [
+        48,
+        48,
+        8
+      ],
+      "in_scale": 0.003921568859368563,
+      "in_zp": -128,
+      "out_scale": 0.014969985000789165,
+      "out_zp": -128,
+      "op": "conv",
+      "kh": 3,
+      "kw": 3,
+      "stride": 2,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L1_depthwise_conv_2d",
+      "in_tensor": 58,
+      "out_tensor": 59,
+      "in_shape": [
+        48,
+        48,
+        8
+      ],
+      "out_shape": [
+        48,
+        48,
+        8
+      ],
+      "in_scale": 0.014969985000789165,
+      "in_zp": -128,
+      "out_scale": 0.04838762432336807,
+      "out_zp": -128,
+      "op": "dwconv",
+      "kh": 3,
+      "kw": 3,
+      "stride": 1,
+      "pad": 1,
+      "act": "relu"
+    },
+    {
+      "name": "L2_conv_2d",
+      "in_tensor": 59,
+      "out_tensor": 60,
+      "in_shape": [
+        48,
+        48,
+        8
+      ],
+      "out_shape": [
+        48,
+        48,
+        16
+      ],
+      "in_scale": 0.04838762432336807,
+      "in_zp": -128,
+      "out_scale": 0.034131087362766266,
+      "out_zp": -128,
+      "op": "conv",
+      "kh": 1,
+      "kw": 1,
+      "stride": 1,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L3_depthwise_conv_2d",
+      "in_tensor": 60,
+      "out_tensor": 61,
+      "in_shape": [
+        48,
+        48,
+        16
+      ],
+      "out_shape": [
+        24,
+        24,
+        16
+      ],
+      "in_scale": 0.034131087362766266,
+      "in_zp": -128,
+      "out_scale": 0.030495090410113335,
+      "out_zp": -128,
+      "op": "dwconv",
+      "kh": 3,
+      "kw": 3,
+      "stride": 2,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L4_conv_2d",
+      "in_tensor": 61,
+      "out_tensor": 62,
+      "in_shape": [
+        24,
+        24,
+        16
+      ],
+      "out_shape": [
+        24,
+        24,
+        32
+      ],
+      "in_scale": 0.030495090410113335,
+      "in_zp": -128,
+      "out_scale": 0.03239208459854126,
+      "out_zp": -128,
+      "op": "conv",
+      "kh": 1,
+      "kw": 1,
+      "stride": 1,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L5_depthwise_conv_2d",
+      "in_tensor": 62,
+      "out_tensor": 63,
+      "in_shape": [
+        24,
+        24,
+        32
+      ],
+      "out_shape": [
+        24,
+        24,
+        32
+      ],
+      "in_scale": 0.03239208459854126,
+      "in_zp": -128,
+      "out_scale": 0.040333110839128494,
+      "out_zp": -128,
+      "op": "dwconv",
+      "kh": 3,
+      "kw": 3,
+      "stride": 1,
+      "pad": 1,
+      "act": "relu"
+    },
+    {
+      "name": "L6_conv_2d",
+      "in_tensor": 63,
+      "out_tensor": 64,
+      "in_shape": [
+        24,
+        24,
+        32
+      ],
+      "out_shape": [
+        24,
+        24,
+        32
+      ],
+      "in_scale": 0.040333110839128494,
+      "in_zp": -128,
+      "out_scale": 0.04099825397133827,
+      "out_zp": -128,
+      "op": "conv",
+      "kh": 1,
+      "kw": 1,
+      "stride": 1,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L7_depthwise_conv_2d",
+      "in_tensor": 64,
+      "out_tensor": 65,
+      "in_shape": [
+        24,
+        24,
+        32
+      ],
+      "out_shape": [
+        12,
+        12,
+        32
+      ],
+      "in_scale": 0.04099825397133827,
+      "in_zp": -128,
+      "out_scale": 0.02860599011182785,
+      "out_zp": -128,
+      "op": "dwconv",
+      "kh": 3,
+      "kw": 3,
+      "stride": 2,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L8_conv_2d",
+      "in_tensor": 65,
+      "out_tensor": 66,
+      "in_shape": [
+        12,
+        12,
+        32
+      ],
+      "out_shape": [
+        12,
+        12,
+        64
+      ],
+      "in_scale": 0.02860599011182785,
+      "in_zp": -128,
+      "out_scale": 0.03122817724943161,
+      "out_zp": -128,
+      "op": "conv",
+      "kh": 1,
+      "kw": 1,
+      "stride": 1,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L9_depthwise_conv_2d",
+      "in_tensor": 66,
+      "out_tensor": 67,
+      "in_shape": [
+        12,
+        12,
+        64
+      ],
+      "out_shape": [
+        12,
+        12,
+        64
+      ],
+      "in_scale": 0.03122817724943161,
+      "in_zp": -128,
+      "out_scale": 0.03156215697526932,
+      "out_zp": -128,
+      "op": "dwconv",
+      "kh": 3,
+      "kw": 3,
+      "stride": 1,
+      "pad": 1,
+      "act": "relu"
+    },
+    {
+      "name": "L10_conv_2d",
+      "in_tensor": 67,
+      "out_tensor": 68,
+      "in_shape": [
+        12,
+        12,
+        64
+      ],
+      "out_shape": [
+        12,
+        12,
+        64
+      ],
+      "in_scale": 0.03156215697526932,
+      "in_zp": -128,
+      "out_scale": 0.029660074040293694,
+      "out_zp": -128,
+      "op": "conv",
+      "kh": 1,
+      "kw": 1,
+      "stride": 1,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L11_depthwise_conv_2d",
+      "in_tensor": 68,
+      "out_tensor": 69,
+      "in_shape": [
+        12,
+        12,
+        64
+      ],
+      "out_shape": [
+        6,
+        6,
+        64
+      ],
+      "in_scale": 0.029660074040293694,
+      "in_zp": -128,
+      "out_scale": 0.03242664411664009,
+      "out_zp": -128,
+      "op": "dwconv",
+      "kh": 3,
+      "kw": 3,
+      "stride": 2,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L12_conv_2d",
+      "in_tensor": 69,
+      "out_tensor": 70,
+      "in_shape": [
+        6,
+        6,
+        64
+      ],
+      "out_shape": [
+        6,
+        6,
+        128
+      ],
+      "in_scale": 0.03242664411664009,
+      "in_zp": -128,
+      "out_scale": 0.030614037066698074,
+      "out_zp": -128,
+      "op": "conv",
+      "kh": 1,
+      "kw": 1,
+      "stride": 1,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L13_depthwise_conv_2d",
+      "in_tensor": 70,
+      "out_tensor": 71,
+      "in_shape": [
+        6,
+        6,
+        128
+      ],
+      "out_shape": [
+        6,
+        6,
+        128
+      ],
+      "in_scale": 0.030614037066698074,
+      "in_zp": -128,
+      "out_scale": 0.029680492356419563,
+      "out_zp": -128,
+      "op": "dwconv",
+      "kh": 3,
+      "kw": 3,
+      "stride": 1,
+      "pad": 1,
+      "act": "relu"
+    },
+    {
+      "name": "L14_conv_2d",
+      "in_tensor": 71,
+      "out_tensor": 72,
+      "in_shape": [
+        6,
+        6,
+        128
+      ],
+      "out_shape": [
+        6,
+        6,
+        128
+      ],
+      "in_scale": 0.029680492356419563,
+      "in_zp": -128,
+      "out_scale": 0.023882737383246422,
+      "out_zp": -128,
+      "op": "conv",
+      "kh": 1,
+      "kw": 1,
+      "stride": 1,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L15_depthwise_conv_2d",
+      "in_tensor": 72,
+      "out_tensor": 73,
+      "in_shape": [
+        6,
+        6,
+        128
+      ],
+      "out_shape": [
+        6,
+        6,
+        128
+      ],
+      "in_scale": 0.023882737383246422,
+      "in_zp": -128,
+      "out_scale": 0.03654126450419426,
+      "out_zp": -128,
+      "op": "dwconv",
+      "kh": 3,
+      "kw": 3,
+      "stride": 1,
+      "pad": 1,
+      "act": "relu"
+    },
+    {
+      "name": "L16_conv_2d",
+      "in_tensor": 73,
+      "out_tensor": 74,
+      "in_shape": [
+        6,
+        6,
+        128
+      ],
+      "out_shape": [
+        6,
+        6,
+        128
+      ],
+      "in_scale": 0.03654126450419426,
+      "in_zp": -128,
+      "out_scale": 0.036499977111816406,
+      "out_zp": -128,
+      "op": "conv",
+      "kh": 1,
+      "kw": 1,
+      "stride": 1,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L17_depthwise_conv_2d",
+      "in_tensor": 74,
+      "out_tensor": 75,
+      "in_shape": [
+        6,
+        6,
+        128
+      ],
+      "out_shape": [
+        6,
+        6,
+        128
+      ],
+      "in_scale": 0.036499977111816406,
+      "in_zp": -128,
+      "out_scale": 0.03781038895249367,
+      "out_zp": -128,
+      "op": "dwconv",
+      "kh": 3,
+      "kw": 3,
+      "stride": 1,
+      "pad": 1,
+      "act": "relu"
+    },
+    {
+      "name": "L18_conv_2d",
+      "in_tensor": 75,
+      "out_tensor": 76,
+      "in_shape": [
+        6,
+        6,
+        128
+      ],
+      "out_shape": [
+        6,
+        6,
+        128
+      ],
+      "in_scale": 0.03781038895249367,
+      "in_zp": -128,
+      "out_scale": 0.020604433491826057,
+      "out_zp": -128,
+      "op": "conv",
+      "kh": 1,
+      "kw": 1,
+      "stride": 1,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L19_depthwise_conv_2d",
+      "in_tensor": 76,
+      "out_tensor": 77,
+      "in_shape": [
+        6,
+        6,
+        128
+      ],
+      "out_shape": [
+        6,
+        6,
+        128
+      ],
+      "in_scale": 0.020604433491826057,
+      "in_zp": -128,
+      "out_scale": 0.03322611376643181,
+      "out_zp": -128,
+      "op": "dwconv",
+      "kh": 3,
+      "kw": 3,
+      "stride": 1,
+      "pad": 1,
+      "act": "relu"
+    },
+    {
+      "name": "L20_conv_2d",
+      "in_tensor": 77,
+      "out_tensor": 78,
+      "in_shape": [
+        6,
+        6,
+        128
+      ],
+      "out_shape": [
+        6,
+        6,
+        128
+      ],
+      "in_scale": 0.03322611376643181,
+      "in_zp": -128,
+      "out_scale": 0.018733007833361626,
+      "out_zp": -128,
+      "op": "conv",
+      "kh": 1,
+      "kw": 1,
+      "stride": 1,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L21_depthwise_conv_2d",
+      "in_tensor": 78,
+      "out_tensor": 79,
+      "in_shape": [
+        6,
+        6,
+        128
+      ],
+      "out_shape": [
+        6,
+        6,
+        128
+      ],
+      "in_scale": 0.018733007833361626,
+      "in_zp": -128,
+      "out_scale": 0.034128330647945404,
+      "out_zp": -128,
+      "op": "dwconv",
+      "kh": 3,
+      "kw": 3,
+      "stride": 1,
+      "pad": 1,
+      "act": "relu"
+    },
+    {
+      "name": "L22_conv_2d",
+      "in_tensor": 79,
+      "out_tensor": 80,
+      "in_shape": [
+        6,
+        6,
+        128
+      ],
+      "out_shape": [
+        6,
+        6,
+        128
+      ],
+      "in_scale": 0.034128330647945404,
+      "in_zp": -128,
+      "out_scale": 0.01888163946568966,
+      "out_zp": -128,
+      "op": "conv",
+      "kh": 1,
+      "kw": 1,
+      "stride": 1,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L23_depthwise_conv_2d",
+      "in_tensor": 80,
+      "out_tensor": 81,
+      "in_shape": [
+        6,
+        6,
+        128
+      ],
+      "out_shape": [
+        3,
+        3,
+        128
+      ],
+      "in_scale": 0.01888163946568966,
+      "in_zp": -128,
+      "out_scale": 0.025280557572841644,
+      "out_zp": -128,
+      "op": "dwconv",
+      "kh": 3,
+      "kw": 3,
+      "stride": 2,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L24_conv_2d",
+      "in_tensor": 81,
+      "out_tensor": 82,
+      "in_shape": [
+        3,
+        3,
+        128
+      ],
+      "out_shape": [
+        3,
+        3,
+        256
+      ],
+      "in_scale": 0.025280557572841644,
+      "in_zp": -128,
+      "out_scale": 0.021837972104549408,
+      "out_zp": -128,
+      "op": "conv",
+      "kh": 1,
+      "kw": 1,
+      "stride": 1,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L25_depthwise_conv_2d",
+      "in_tensor": 82,
+      "out_tensor": 83,
+      "in_shape": [
+        3,
+        3,
+        256
+      ],
+      "out_shape": [
+        3,
+        3,
+        256
+      ],
+      "in_scale": 0.021837972104549408,
+      "in_zp": -128,
+      "out_scale": 0.02962612360715866,
+      "out_zp": -128,
+      "op": "dwconv",
+      "kh": 3,
+      "kw": 3,
+      "stride": 1,
+      "pad": 1,
+      "act": "relu"
+    },
+    {
+      "name": "L26_conv_2d",
+      "in_tensor": 83,
+      "out_tensor": 84,
+      "in_shape": [
+        3,
+        3,
+        256
+      ],
+      "out_shape": [
+        3,
+        3,
+        256
+      ],
+      "in_scale": 0.02962612360715866,
+      "in_zp": -128,
+      "out_scale": 0.015656912699341774,
+      "out_zp": -128,
+      "op": "conv",
+      "kh": 1,
+      "kw": 1,
+      "stride": 1,
+      "pad": 0,
+      "act": "relu"
+    },
+    {
+      "name": "L27_average_pool_2d",
+      "in_tensor": 84,
+      "out_tensor": 85,
+      "in_shape": [
+        3,
+        3,
+        256
+      ],
+      "out_shape": [
+        1,
+        1,
+        256
+      ],
+      "in_scale": 0.015656912699341774,
+      "in_zp": -128,
+      "out_scale": 0.015656912699341774,
+      "out_zp": -128,
+      "op": "avgpool",
+      "k": 3,
+      "stride": 3,
+      "pad": 0,
+      "act": "none"
+    },
+    {
+      "name": "L28_fully_connected",
+      "in_tensor": 85,
+      "out_tensor": 87,
+      "in_shape": [
+        1,
+        1,
+        256
+      ],
+      "out_shape": [
+        1,
+        1,
+        2
+      ],
+      "in_scale": 0.015656912699341774,
+      "in_zp": -128,
+      "out_scale": 0.014636218547821045,
+      "out_zp": -5,
+      "op": "conv",
+      "kh": 1,
+      "kw": 1,
+      "stride": 1,
+      "pad": 0,
+      "act": "none",
+      "from_fc": true
+    }
+  ]
+}

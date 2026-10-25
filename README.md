@@ -8,15 +8,15 @@
 
 **A custom INT8 neural-network accelerator, its compiler, and a person detector running on a
 $25 FPGA board.** The NPU runs the MLPerf Tiny **Visual Wake Words** model on a Sipeed Tang
-Nano 20K, **bit-exact with TensorFlow Lite**, in about **5 ms per image**. `npuc` compiles
-quantized ONNX models for it. Everything is built with open-source tools: Yosys,
-nextpnr, Verilator and cocotb.
+Nano 20K, **bit-exact with TensorFlow Lite**, in about **5 ms per image**. Everything is built with
+open-source tools: Yosys, nextpnr, Verilator and cocotb. Quantized ONNX models are compiled
+for it by [**npuc**](https://github.com/finn-freas/npuc), a separate repository.
 
 |  |  |
 |-|-|
 | **Visual Wake Words** | 258,808 cycles (ideal memory), ~273k from the board's SDRAM: **5.1 ms at 54 MHz** |
 | **Accuracy** | identical to TFLite's int8 reference kernels, every layer, every tested image |
-| **Compiler** | `npuc`: ONNX (QDQ / QOperator) or TFLite → NPU program, checked against ONNX Runtime |
+| **Compiler** | TFLite → NPU program, with a cycle-exact simulator; ONNX via [npuc](https://github.com/finn-freas/npuc) |
 | **Hardware** | 8×8 MAC array, depthwise unit, 2 requantizers; 76% of the GW2AR-18's LUTs, 64 DSP multipliers |
 | **Board** | boots from SPI flash, weights in SDRAM, images over USB-UART, result on HDMI |
 
@@ -25,10 +25,11 @@ nextpnr, Verilator and cocotb.
 ```mermaid
 flowchart LR
     subgraph host["Host (Python)"]
-        onnx["model.onnx"] --> npuc["npuc<br/>front ends + compiler"]
-        tfl["model.tflite"] --> npuc
-        npuc --> sim["cycle-exact<br/>simulator"]
-        npuc --> img["program + weights<br/>flash image"]
+        onnx["model.onnx<br/>(via npuc)"] --> ir[("IR")]
+        tfl["model.tflite"] --> ir
+        ir --> comp["compiler"]
+        comp --> sim["cycle-exact<br/>simulator"]
+        comp --> img["program + weights<br/>flash image"]
     end
     subgraph fpga["Tang Nano 20K (GW2AR-18)"]
         flash[("SPI flash")] -->|boot| sys["npu_system<br/>boot · UART · SDRAM ctrl"]
@@ -63,27 +64,20 @@ flowchart LR
   LUT-RAM transposer and parameter store, and designed around Gowin's register packing (a
   register fed by another register costs a pass-through LUT).
 
-## npuc: the compiler
+## The compiler
+
+`sw/model/export_ir.py` turns an int8 TFLite model into a framework-free IR (committed for
+the two models in [`models/ir`](models/ir)). `sw/npu/compiler.py` maps it onto the ISA:
+weight layouts, padding, ping-pong placement in activation memory, average-pool lowering,
+and the rounding mode per layer. `sw/npu/sim.py` executes the result with the RTL's
+integer math and reproduces its cycle count per instruction.
 
 ```bash
-cd sw
-python -m npuc ../models/onnx/mnist_cnn_int8.onnx --images ../models/onnx/mnist_test.npz --verify 1000
+cd sw && python -m npu.compiler ../models/ir/vww --out ../build/npu_vww
 ```
 
-`npuc` maps a quantized ONNX classifier onto the NPU, writes the memory images and a board
-flash image, and reports per-layer cycles. It also runs the program in the simulator and
-compares every layer's output with ONNX Runtime:
-
-```
-| Latency | 14,423 cycles = 0.27 ms at 54 MHz (ideal memory) |
-Check against ONNX Runtime (1000 images): class agrees on 1000/1000; 16617992/16618000 layer
-outputs identical (100.000%), max difference 1 LSB. Accuracy: NPU 0.9760, ONNX Runtime 0.9760.
-```
-
-It accepts QDQ and QOperator models with int8 or uint8 activations (what
-`onnxruntime.quantization` produces), and refuses unsupported models with a reason. The VWW
-model converted with `tf2onnx` compiles to exactly the same images as the TFLite path. See
-[docs/npuc.md](docs/npuc.md).
+[**npuc**](https://github.com/finn-freas/npuc) adds an ONNX front end on top of this
+(PyTorch / ONNX Runtime quantized models, checked layer by layer against ONNX Runtime).
 
 ## Results
 
@@ -91,7 +85,7 @@ model converted with `tf2onnx` compiles to exactly the same images as the TFLite
 |-|-:|-:|-|
 | MLPerf Tiny VWW (96×96×3, 29 layers, 7.5 M MACs) | 258,808 | 4.8 ms (5.1 ms from SDRAM) | = TFLite int8 |
 | MNIST CNN (TFLite) | 16,690 | 0.31 ms | = TFLite int8 |
-| MNIST CNN (PyTorch → ONNX, `npuc`) | 14,423 | 0.27 ms | 97.6%, = ONNX Runtime |
+| MNIST CNN (PyTorch → ONNX, [npuc](https://github.com/finn-freas/npuc)) | 14,423 | 0.27 ms | 97.6%, = ONNX Runtime |
 
 | Board design (`npu_board_top`) | |
 |-|-|
@@ -106,7 +100,7 @@ fixes) is in [`.gateflow/plans/vww_npu_compiler.md`](.gateflow/plans/vww_npu_com
 ```bash
 make -C fpga/tangnano20k TOP=npu_board_top FREQ_MHZ=54        # bitstream (or download it from CI)
 make -C fpga/tangnano20k TOP=npu_board_top prog               # write it to flash
-cd sw && python -m npu.board ../build/vww --image photo.jpg --program   # model + demo image
+cd sw && python -m npu.board ../models/ir/vww --image photo.jpg --program   # model + demo image
 python sw/board/demo.py --port COM5                           # webcam -> board -> verdict
 ```
 
@@ -118,16 +112,15 @@ the LEDs show person / no person / busy / booted / error.
 ## Getting started
 
 ```bash
-make env                 # .venv (simulation, npuc) and .venv-tf (TFLite export)
-make test-sw             # compiler, simulator and npuc tests
+make env                 # .venv (simulation) and .venv-tf (TFLite export)
+make test-sw             # ISA, requant, compiler and simulator tests
 make test-rtl            # cocotb + Verilator (needs OSS CAD Suite in ~/oss-cad-suite)
-make npuc ONNX=path/to/model.onnx
 ```
 
 The RTL is checked against TFLite's golden tensors layer by layer, cycle by cycle against
-the simulator's timing model, on random networks (odd sizes, strides, padding), on
-npuc-compiled ONNX models, and as a whole board system with SPI flash and SDRAM models. CI
-runs all of it and builds the bitstream.
+the simulator's timing model, on random networks (odd sizes, strides, padding), and as a
+whole board system with SPI flash and SDRAM models. CI runs all of it and builds the
+bitstream.
 
 ## Layout
 
@@ -135,12 +128,11 @@ runs all of it and builds the bitstream.
 rtl/npu/      the NPU: core, tile engine, MAC array, requant, pool
 rtl/board/    board system: flash boot, SDRAM controller, UART, HDMI overlay
 sw/npu/       ISA, compiler, cycle-exact simulator, TFLite-exact quantization, flash images
-sw/npuc/      npuc: ONNX front end, verification against ONNX Runtime, CLI
-sw/model/     model export (TFLite -> IR), training scripts (TF and PyTorch)
-models/       the VWW and MNIST models (TFLite and ONNX)
+sw/model/     model export (TFLite -> IR), training script
+models/       the VWW and MNIST TFLite models and their exported IR
 tb/           cocotb testbenches
 fpga/         Tang Nano 20K constraints and build
-docs/         ISA and npuc reference
+docs/         ISA reference
 ```
 
 ## License
