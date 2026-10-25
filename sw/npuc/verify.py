@@ -23,6 +23,9 @@ class LayerDiff:
 class Verification:
     images: int = 0
     argmax_agree: int = 0
+    labelled: int = 0
+    npu_correct: int = 0
+    ort_correct: int = 0
     layers: list[LayerDiff] = field(default_factory=list)
 
     @property
@@ -65,8 +68,15 @@ class OrtReference:
         self.layers = ir["layers"]
 
     def run(self, image_u8):
-        x = np.asarray(image_u8).transpose(2, 0, 1)[None]
-        x = (x.astype(np.float32) * np.float32(self.input["scale"])) if self.input["float"] else x.astype(np.uint8)
+        x = np.asarray(image_u8)[None]
+        if self.input.get("layout", "NCHW") == "NCHW":
+            x = x.transpose(0, 3, 1, 2)
+        if self.input["float"]:
+            x = x.astype(np.float32) * np.float32(self.input["scale"])
+        elif self.input["dtype"] == "int8":           # code = pixel - 128 (zero point -128)
+            x = (x.astype(np.int16) - 128).astype(np.int8)
+        else:
+            x = x.astype(np.uint8)
         res = self.sess.run(self.names, {self.input["tensor"]: x})
         outs = {}
         for L, r in zip(self.layers, res):
@@ -76,12 +86,12 @@ class OrtReference:
         return outs
 
 
-def verify(prog, ir, model_path, images):
+def verify(prog, ir, model_path, images, labels=None):
     ref = OrtReference(model_path, ir)
     v = Verification(layers=[LayerDiff(L["name"]) for L in ir["layers"]])
     names = [L["name"] for L in ir["layers"]]
     last = names[-1]
-    for img in images:
+    for i, img in enumerate(images):
         cls, _, outs, _, _ = run_sim(prog, img)
         r = ref.run(img)
         for d, n in zip(v.layers, names):
@@ -91,6 +101,11 @@ def verify(prog, ir, model_path, images):
             d.values += diff.size
             d.exact += int((diff == 0).sum())
             d.max_diff = max(d.max_diff, int(diff.max()))
-        v.argmax_agree += cls == int(np.argmax(r[last].reshape(-1)))
+        ort_cls = int(np.argmax(r[last].reshape(-1)))
+        v.argmax_agree += cls == ort_cls
+        if labels is not None:
+            v.labelled += 1
+            v.npu_correct += cls == labels[i]
+            v.ort_correct += ort_cls == labels[i]
         v.images += 1
     return v

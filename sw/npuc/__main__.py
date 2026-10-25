@@ -41,16 +41,18 @@ def load_model(path: Path, rounding: str):
 
 
 def load_images(spec, h, w, c, n, seed=0):
+    """-> (images [n, h, w, c] uint8, labels or None)"""
     if spec is None:                                  # uniform noise exercises every code
-        return np.random.default_rng(seed).integers(0, 256, (n, h, w, c)).astype(np.uint8)
+        return np.random.default_rng(seed).integers(0, 256, (n, h, w, c)).astype(np.uint8), None
     p = Path(spec)
     if p.suffix == ".npz":
-        imgs = np.load(p)["images"][:n].astype(np.uint8)
-        return imgs.reshape(len(imgs), h, w, c)
+        d = np.load(p)
+        imgs = d["images"][:n].astype(np.uint8)
+        return imgs.reshape(len(imgs), h, w, c), (d["labels"][:n] if "labels" in d else None)
     from npu.board import load_image
     files = sorted(f for f in (p.iterdir() if p.is_dir() else [p])
                    if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp", ".npy"))[:n]
-    return np.stack([load_image(f, h, w, c) for f in files])
+    return np.stack([load_image(f, h, w, c) for f in files]), None
 
 
 def layer_rows(ir, prog, stats):
@@ -86,7 +88,9 @@ def render_report(model, ir, prog, rows, total, v, args):
         lines += [f"**Check against ONNX Runtime** ({v.images} images): class agrees on "
                   f"{v.argmax_agree}/{v.images}; {exact}/{vals} layer outputs identical "
                   f"({100 * exact / vals:.3f}%), max difference "
-                  f"{max(d.max_diff for d in v.layers)} LSB.", ""]
+                  f"{max(d.max_diff for d in v.layers)} LSB."
+                  + (f" Accuracy on the labels: NPU {v.npu_correct / v.labelled:.4f}, "
+                     f"ONNX Runtime {v.ort_correct / v.labelled:.4f}." if v.labelled else ""), ""]
     lines += ["| # | Layer | Source node | NPU | Shape (HxWxC) | MACs | Cycles | % |",
               "|-|-|-|-|-|-:|-:|-:|"]
     for i, r in enumerate(rows):
@@ -132,11 +136,11 @@ def main(argv=None):
         raise SystemExit(f"npuc: {args.model.name}: does not fit the NPU: {e}")
 
     h, w, c = ir["input"]["shape"]
-    images = load_images(args.images, h, w, c, max(args.verify, 1))
+    images, labels = load_images(args.images, h, w, c, max(args.verify, 1))
     _, _, _, stats, total = run_sim(prog, images[0])
     v = None
     if args.verify and args.model.suffix == ".onnx":
-        v = verify(prog, ir, args.model, images[:args.verify])
+        v = verify(prog, ir, args.model, images[:args.verify], labels)
 
     out.mkdir(parents=True, exist_ok=True)
     prog.write(out)

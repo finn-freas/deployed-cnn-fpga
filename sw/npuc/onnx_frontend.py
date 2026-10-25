@@ -210,7 +210,7 @@ class OnnxImporter:
                  out_tensor=out_tensor, out_dtype=str(np.dtype(out_dtype)))
         lo, hi = -128, 127
         for kind, a, b in acts:          # clamps in real units -> output codes
-            s, z = out_q
+            s, z = out_q[0], out_q[1]
             if a is not None:
                 lo = max(lo, z + int(np.round(a / s)))
             if b is not None:
@@ -289,6 +289,9 @@ class OnnxImporter:
         L = self._layer(op, name, k=k, stride=stride, pad=pad)
         if op == "avgpool":
             L["approx"] = True
+            if k > 3:
+                self.notes.append(f"{L['name']}: a {k}x{k} average pool runs as a CONV with identity "
+                                  "weights (slow); windows up to 3x3 use the depthwise unit")
         return L, (oh, ow, C)
 
     # ------------------------------------------------------------ graph walk
@@ -299,13 +302,20 @@ class OnnxImporter:
         inp = g.inputs[0]
         shp = g.shapes.get(inp.name)
         if not shp or len(shp) != 4:
-            raise UnsupportedModel(f"input {inp.name!r} must be a 4-D NCHW image, got shape {shp}")
-        _, C, H, W = [1 if d is None else d for d in shp]
-        self.shape, self.flat = [H, W, C], False
+            raise UnsupportedModel(f"input {inp.name!r} must be a 4-D image, got shape {shp}")
         self.input_name, self.input_float = inp.name, g.elem[inp.name] == 1
+        t = inp.name
+        # NHWC input followed by a transpose to NCHW (e.g. converted from TFLite)
+        c = g.sole_consumer(t)
+        self.input_layout = "NCHW"
+        if c is not None and c.op_type == "Transpose" and list(_attrs(c).get("perm", [])) == [0, 3, 1, 2]:
+            self.input_layout, t = "NHWC", c.output[0]
+            _, H, W, C = [d or 1 for d in shp]
+        else:
+            _, C, H, W = [d or 1 for d in shp]
+        self.shape, self.flat = [H, W, C], False
 
         # the first quantized tensor
-        t = inp.name
         if self.input_float:
             q = g.sole_consumer(t)
             if q is None or q.op_type != "QuantizeLinear":
@@ -323,7 +333,7 @@ class OnnxImporter:
                 self.q = _qparams(g, c.input[1], c.input[2], "input")
             else:
                 raise UnsupportedModel(f"integer input feeds {c.op_type}")
-        s_in, z_in, _ = self.q
+        s_in, z_in, in_dtype = self.q
         if z_in != -128:
             raise UnsupportedModel(
                 f"input quantization zero point is {z_in + 128} (uint8): the NPU feeds raw pixels, "
@@ -364,7 +374,8 @@ class OnnxImporter:
                                    f"(it ends at {self.shape[0]}x{self.shape[1]}x{self.shape[2]})")
         ir = {"source": "onnx", "rounding": self.rounding,
               "input": {"tensor": self.input_name, "shape": [H, W, C], "scale": self.input_scale,
-                        "zp": -128, "float": self.input_float},
+                        "zp": -128, "float": self.input_float, "layout": self.input_layout,
+                        "dtype": str(np.dtype(in_dtype))},
               "output": {"softmax_dropped": self.softmax_dropped},
               "layers": self.layers, "notes": self.notes}
         return ir, self.arrays

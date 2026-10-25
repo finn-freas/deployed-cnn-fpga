@@ -110,6 +110,8 @@ def quantize(float_path, out_path, images_u8, fmt="QDQ", act="uint8", per_channe
                 return None
             return {"image": (img.transpose(2, 0, 1)[None] / 255.0).astype(np.float32)}
 
+    import logging
+    logging.getLogger().setLevel(logging.ERROR)      # the 'consider pre-processing' hint
     quantize_static(str(float_path), str(out_path), Reader(),
                     quant_format=QuantFormat.QDQ if fmt == "QDQ" else QuantFormat.QOperator,
                     activation_type=QuantType.QUInt8 if act == "uint8" else QuantType.QInt8,
