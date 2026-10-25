@@ -14,8 +14,8 @@ jobs:
     name: Compiler, simulator, npuc
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -30,7 +30,7 @@ jobs:
             --images ../models/onnx/mnist_test.npz --verify 200
           python -m npuc ../models/vww/vww_96_int8.onnx -o ../build/npuc/vww --rounding tflite --verify 3
           cat ../build/npuc/vww/report.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: npuc-reports
           path: build/npuc/*/report.md
@@ -40,8 +40,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -62,12 +62,13 @@ jobs:
     timeout-minutes: 120
     if: github.event_name != 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: YosysHQ/setup-oss-cad-suite@v4
         with:
           version: ${{ env.OSS_CAD_SUITE }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Synthesis, place and route (54 MHz)
+        shell: bash          # -o pipefail: a failed build fails the step despite tee
         run: make -C fpga/tangnano20k TOP=npu_board_top FREQ_MHZ=54 ENV= | tee build.log
       - name: Summary
         run: |
@@ -77,7 +78,7 @@ jobs:
             sed -n '/--- npu_board_top/,$p' build.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: npu_board_top-bitstream
           path: |
