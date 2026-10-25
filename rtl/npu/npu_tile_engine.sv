@@ -416,7 +416,7 @@ module npu_tile_engine
     logic        dr_busy, dr_run;
     logic [2:0]  dr_wait;
     logic [5:0]  dr_idx;            // column-pair index: row dr_idx[4:2], pair dr_idx[1:0]
-    logic [12:0] dr_ob;             // output word address of the row being drained
+    logic [ACT_AW-1:0] job_ob;      // output word address of the drained job's first pixel
     logic [3:0]  dr_nval;           // rows that are real pixels
     // per-channel params: prefetched when a job starts (CONV: its first value; DWCONV: its
     // first read) into one of two sets of a small LUT RAM, alternating, which the drain reads
@@ -442,7 +442,8 @@ module npu_tile_engine
     logic [DQ-1:0]           tq_v;
     logic [1:0]              tq_cp  [DQ];
     logic                    tq_wr  [DQ];           // last pair of a valid pixel
-    logic [ACT_AW-1:0]       tq_adr [DQ];
+    logic                    tq_first [DQ];         // a job's first pair
+    logic [ACT_AW-1:0]       wa;                    // output side: the pixel's word address
     logic [WORD_W-17:0]      row_word;              // bytes 0..N-3 of the pixel being drained
 
     for (genvar q = 0; q < 2; q++) begin : g_rq
@@ -454,7 +455,7 @@ module npu_tile_engine
 
     always_comb begin
         act_we    = tq_v[DQ-1] && tq_wr[DQ-1];
-        act_waddr = tq_adr[DQ-1];
+        act_waddr = wa;
         act_wdata = {rq_out[1], rq_out[0], row_word};
     end
 
@@ -566,11 +567,11 @@ module npu_tile_engine
             dr_wait <= 3'(DRAIN_DELAY - 1);
             dr_run  <= 1'b0;
             if (is_dw) begin
-                dr_ob   <= u_ob;
+                job_ob  <= ACT_AW'(u_ob);
                 dr_nval <= u_nval;
                 rset    <= u_set;
             end else begin
-                dr_ob   <= c_ob + 13'(c_g);
+                job_ob  <= ACT_AW'(c_ob + 13'(c_g));
                 dr_nval <= (P - c_p0 >= 14'(N)) ? 4'(N) : 4'(P - c_p0);
                 rset    <= c_set;
             end
@@ -581,7 +582,7 @@ module npu_tile_engine
         for (int i = DQ - 1; i > 0; i--) begin
             tq_cp[i]  <= tq_cp[i-1];
             tq_wr[i]  <= tq_wr[i-1];
-            tq_adr[i] <= tq_adr[i-1];
+            tq_first[i] <= tq_first[i-1];
         end
         if (dr_busy && !hand) begin
             if (!dr_run) begin
@@ -604,8 +605,7 @@ module npu_tile_engine
                 tq_v[0]   <= 1'b1;
                 tq_cp[0]  <= dr_idx[1:0];
                 tq_wr[0]  <= (dr_idx[1:0] == 2'(N / 2 - 1)) && (4'(r) < dr_nval);
-                tq_adr[0] <= ACT_AW'(dr_ob);
-                if (dr_idx[1:0] == 2'(N / 2 - 1)) dr_ob <= dr_ob + 13'(I.out_g);
+                tq_first[0] <= (dr_idx == '0);
                 dr_idx    <= dr_idx + 6'd1;
                 if (dr_idx == 6'(N * N / 2 - 1)) begin
                     dr_busy <= 1'b0;
@@ -615,6 +615,12 @@ module npu_tile_engine
         end
         if (tq_v[DQ-1] && tq_cp[DQ-1] != 2'(N / 2 - 1))
             row_word[16 * tq_cp[DQ-1] +: 16] <= {rq_out[1], rq_out[0]};
+        // output-side address (the job's base is held from the hand-over until its first pair
+        // comes out, well before the next hand-over): row r's pixel goes to base + r*out_g
+        if (tq_v[DQ-1]) begin
+            if (tq_first[DQ-1])                    wa <= job_ob;
+            else if (tq_cp[DQ-1] == 2'(N / 2 - 1)) wa <= wa + ACT_AW'(I.out_g);
+        end
 
         if (rst) begin
             state      <= S_IDLE;

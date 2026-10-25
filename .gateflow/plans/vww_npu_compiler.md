@@ -158,6 +158,20 @@ vww01, and board power from a USB power meter (energy per inference).
   simulation: 272,862 cycles from SDRAM (5.05 ms at 54 MHz) vs 4.23M over 1-bit flash.
   Not yet run on hardware: SDRAM read latency is calibrated at boot; flash/UART pins taken
   from community constraint files.
+- **npuc (2026-10-24):** ONNX front end (QDQ/QOperator), verified against onnxruntime and
+  on the RTL; moved to its own repository (github.com/finn-freas/npuc) with this one as a
+  submodule.
+- **Load overlap + packed reuse (2026-10-25):** where the cycles went: requant throughput
+  (2 pipelines, >= 34 cycles per job of 64 outputs) bounds small-K pointwise and stride-1
+  depthwise layers; parameter and cached-weight loads before each layer cost 19.8k cycles;
+  L0 reads two aligned words per 8-byte window. Params now stream while the layer runs,
+  each job waiting only for its group's (group mode: after each group's weights), and a
+  kernel row's later windows reuse the previous window's second word (8-entry LUT RAM).
+  **VWW 258,808 -> 243,602 cycles; board from SDRAM 272,862 -> 256,642 (4.75 ms).**
+  Evaluated and not done: 4 requant pipelines (model: 238.7k, -7.8%) need ~1.2k LUT +
+  550 ALU more than the device has room for (each PE's adder feeds two registers, so the
+  array is already at its packing minimum); one-word params (27-bit bias) fail on VWW,
+  whose dead channels carry +-2^30 biases with tiny scales.
 
 ## Milestones
 

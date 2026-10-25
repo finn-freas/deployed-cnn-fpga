@@ -1,7 +1,8 @@
 // status_cdc: carries npu_system's status into the display's clock domain.
-// The result fields change once per inference: the source domain snapshots them and flips
-// a toggle; the destination copies the (by then long stable) snapshot when the
-// synchronised toggle changes. Single-bit flags go through two-flop synchronisers.
+// The result fields are written together once per inference, with res_count incremented,
+// so res_count[0] toggles per result; the destination copies the fields (by then long
+// stable, the next result is milliseconds away) when the synchronised toggle changes.
+// Single-bit flags go through two-flop synchronisers.
 
 `default_nettype none
 
@@ -27,27 +28,13 @@ module status_cdc (
     output      logic [31:0] d_res_cycles,
     output      logic [15:0] d_res_count
 );
-    localparam int SW = 1 + 8 + 8 + 32 + 16;
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic unused_src = s_clk ^ s_rst;   // no source-side logic
+    /* verilator lint_on UNUSEDSIGNAL */
 
-    // ---- source: snapshot and toggle when a new result arrives
-    logic [15:0]   s_seen;
-    logic          s_tog;
-    logic [SW-1:0] s_snap;
-    always_ff @(posedge s_clk) begin
-        if (s_rst) begin
-            s_seen <= '0;
-            s_tog  <= 1'b0;
-        end else if (s_res_count != s_seen) begin
-            s_seen <= s_res_count;
-            s_snap <= {s_res_valid, s_res_class, s_res_score, s_res_cycles, s_res_count};
-            s_tog  <= !s_tog;
-        end
-    end
-
-    // ---- destination
     logic [2:0] tog, f_bt, f_be, f_bz;
     always_ff @(posedge d_clk) begin
-        tog  <= {tog[1:0], s_tog};
+        tog  <= {tog[1:0], s_res_count[0]};
         f_bt <= {f_bt[1:0], s_booted};
         f_be <= {f_be[1:0], s_boot_err};
         f_bz <= {f_bz[1:0], s_busy};
@@ -55,7 +42,8 @@ module status_cdc (
             d_res_valid <= 1'b0;
             d_res_count <= '0;
         end else if (tog[2] != tog[1]) begin
-            {d_res_valid, d_res_class, d_res_score, d_res_cycles, d_res_count} <= s_snap;
+            {d_res_valid, d_res_class, d_res_score, d_res_cycles, d_res_count} <=
+                {s_res_valid, s_res_class, s_res_score, s_res_cycles, s_res_count};
         end
     end
     assign d_booted   = f_bt[2];

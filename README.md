@@ -8,13 +8,13 @@
 
 **A custom INT8 neural-network accelerator, its compiler, and a person detector running on a
 $25 FPGA board.** The NPU runs the MLPerf Tiny **Visual Wake Words** model on a Sipeed Tang
-Nano 20K, **bit-exact with TensorFlow Lite**, in about **5 ms per image**. Everything is built with
+Nano 20K, **bit-exact with TensorFlow Lite**, in about **4.75 ms per image**. Everything is built with
 open-source tools: Yosys, nextpnr, Verilator and cocotb. Quantized ONNX models are compiled
 for it by [**npuc**](https://github.com/finn-freas/npuc), a separate repository.
 
 |  |  |
 |-|-|
-| **Visual Wake Words** | 258,808 cycles (ideal memory), ~273k from the board's SDRAM: **5.1 ms at 54 MHz** |
+| **Visual Wake Words** | 243,602 cycles (ideal memory), 256,642 from the board's SDRAM: **4.75 ms at 54 MHz** |
 | **Accuracy** | identical to TFLite's int8 reference kernels, every layer, every tested image |
 | **Compiler** | TFLite → NPU program, with a cycle-exact simulator; ONNX via [npuc](https://github.com/finn-freas/npuc) |
 | **Hardware** | 8×8 MAC array, depthwise unit, 2 requantizers; 76% of the GW2AR-18's LUTs, 64 DSP multipliers |
@@ -83,8 +83,8 @@ cd sw && python -m npu.compiler ../models/ir/vww --out ../build/npu_vww
 
 | Model | Cycles | Latency at 54 MHz | Accuracy |
 |-|-:|-:|-|
-| MLPerf Tiny VWW (96×96×3, 29 layers, 7.5 M MACs) | 258,808 | 4.8 ms (5.1 ms from SDRAM) | = TFLite int8 |
-| MNIST CNN (TFLite) | 16,690 | 0.31 ms | = TFLite int8 |
+| MLPerf Tiny VWW (96×96×3, 29 layers, 7.5 M MACs) | 243,602 | 4.5 ms (4.75 ms from SDRAM) | = TFLite int8 |
+| MNIST CNN (TFLite) | 16,612 | 0.31 ms | = TFLite int8 |
 | MNIST CNN (PyTorch → ONNX, [npuc](https://github.com/finn-freas/npuc)) | 14,423 | 0.27 ms | 97.6%, = ONNX Runtime |
 
 | Board design (`npu_board_top`) | |

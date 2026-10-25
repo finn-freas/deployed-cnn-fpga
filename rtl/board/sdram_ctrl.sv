@@ -115,6 +115,12 @@ module sdram_ctrl #(
     logic [2:0] cal_i;
     logic [RL_N-1:0] cal_ok;
 
+    // a word is delivered in the cycle its second beat is in dq_q (not re-registered: on
+    // Gowin a register fed by registers costs a pass-through LUT per bit)
+    assign rvalid = (st == RD_RUN || st == RD_DRAIN) && beat_v && beat[0] && skip == 0
+                    && words_left != 0;
+    assign rdata  = {dq_q, lo};
+
     assign rd_ack = (st == IDLE) && ready && rd_req && !ref_due && !wr_req && rd_len != 0;
     assign wr_ack = (st == IDLE) && ready && wr_req && !ref_due;
 
@@ -122,7 +128,6 @@ module sdram_ctrl #(
         cmd      <= C_NOP;
         sd_dq_oe <= 1'b0;
         sd_dqm   <= 4'b0000;
-        rvalid   <= 1'b0;
         if (ref_cnt != 0) ref_cnt <= ref_cnt - 16'd1;
         else              ref_due <= 1'b1;
 
@@ -136,8 +141,6 @@ module sdram_ctrl #(
                     if (skip != 0) begin
                         skip <= skip - 16'd1;
                     end else if (words_left != 0) begin
-                        rvalid     <= 1'b1;
-                        rdata      <= {dq_q, lo};
                         words_left <= words_left - 16'd1;
                     end
                 end
