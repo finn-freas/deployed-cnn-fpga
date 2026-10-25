@@ -2,7 +2,9 @@
 
 Boots the VWW program and demo image from flash, checks the first result and the
 thumbnail, then sends another image over the UART and checks the reply.
-NPU_SYSTEM_MODEL=mnist|vww picks the model (default vww).
+NPU_SYSTEM_MODEL=mnist|vww picks the model (default vww). Without the TFLite golden data
+(build/, needs TensorFlow) the committed ONNX models are compiled with npuc instead and the
+simulator provides the expected results.
 """
 
 import os
@@ -52,6 +54,31 @@ async def uart_recv(dut, n):
     return bytes(out)
 
 
+def load_case():
+    """-> (program, two images, expected logits per image)"""
+    model_dir = ROOT / "build" / ("model" if MODEL == "mnist" else MODEL)
+    if (model_dir / "golden.npz").exists():
+        prog = compile_ir(*load_ir(model_dir))
+        gold = np.load(model_dir / "golden.npz")
+        last = prog.meta["layers"][-1]["name"]
+        return prog, gold["images"][:2], [gold[last][i].reshape(-1) for i in range(2)]
+    from npu.sim import NpuSim
+    from npuc.onnx_frontend import import_onnx
+    if MODEL == "mnist":
+        prog = compile_ir(*import_onnx(ROOT / "models" / "onnx" / "mnist_cnn_int8.onnx"))
+        images = np.load(ROOT / "models" / "onnx" / "mnist_test.npz")["images"][:2]
+    else:   # tf2onnx's conversion of the VWW model: identical images to the TFLite path
+        prog = compile_ir(*import_onnx(ROOT / "models" / "vww" / "vww_96_int8.onnx", rounding="tflite"))
+        images = np.random.default_rng(0).integers(0, 256, (2, 96, 96, 3)).astype(np.uint8)
+    last = prog.meta["layers"][-1]
+    logits = []
+    for img in images:
+        sim = NpuSim.from_program(prog)
+        sim.run(img)
+        logits.append(sim.read_tensor(last["base"], 1, 1, last["cb"], last["c"]).reshape(-1))
+    return prog, images, logits
+
+
 def thumbnail(img):
     """What npu_system computes: every second pixel of every second row, (r+2g+b)>>6."""
     s = img[0:96:2, 0:96:2].astype(np.int64)
@@ -62,14 +89,7 @@ def thumbnail(img):
 
 @cocotb.test()
 async def system_boot_and_uart(dut):
-    model_dir = ROOT / "build" / ("model" if MODEL == "mnist" else MODEL)
-    if not (model_dir / "golden.npz").exists():
-        dut._log.warning(f"no golden data in {model_dir}, skipping")
-        return
-    prog = compile_ir(*load_ir(model_dir))
-    gold = np.load(model_dir / "golden.npz")
-    last = prog.meta["layers"][-1]["name"]
-    img0, img1 = gold["images"][0], gold["images"][1]
+    prog, (img0, img1), expect = load_case()
 
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     dut.rst.value = 1
@@ -87,7 +107,7 @@ async def system_boot_and_uart(dut):
     await with_timeout(RisingEdge(dut.res_valid), 2000, "ms")
     await FallingEdge(dut.clk)
     assert int(dut.boot_err.value) == 0
-    logits = gold[last][0].reshape(-1)
+    logits = expect[0]
     cls, score = int(dut.res_class.value), dut.res_score.value.to_signed()
     assert cls == int(np.argmax(logits)) and score == int(logits.max()), "boot run result"
     cyc = int(dut.res_cycles.value)
@@ -108,7 +128,7 @@ async def system_boot_and_uart(dut):
     recv = cocotb.start_soon(uart_recv(dut, 7))
     await uart_send(dut, b"I" + payload.tobytes())
     reply = await with_timeout(recv, 200, "ms")
-    logits = gold[last][1].reshape(-1)
+    logits = expect[1]
     assert reply[0] == 0xA5, reply
     assert reply[1] == int(np.argmax(logits)), "uart class"
     assert np.int8(reply[2]) == int(logits.max()), "uart score"

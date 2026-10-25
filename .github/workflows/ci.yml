@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  OSS_CAD_SUITE: "2026-10-23"
+
+jobs:
+  software:
+    name: Compiler, simulator, npuc
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-sim.txt
+      - run: pip install -r requirements-sim.txt
+      - name: Unit tests (ISA, TFLite-exact requant, npuc vs onnxruntime)
+        run: cd sw && python -m pytest -q tests
+      - name: Compile the example models
+        run: |
+          cd sw
+          python -m npuc ../models/onnx/mnist_cnn_int8.onnx -o ../build/npuc/mnist \
+            --images ../models/onnx/mnist_test.npz --verify 200
+          python -m npuc ../models/vww/vww_96_int8.onnx -o ../build/npuc/vww --rounding tflite --verify 3
+          cat ../build/npuc/vww/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npuc-reports
+          path: build/npuc/*/report.md
+
+  rtl:
+    name: RTL (Verilator + cocotb)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-sim.txt
+      - run: pip install -r requirements-sim.txt
+      - uses: YosysHQ/setup-oss-cad-suite@v4
+        with:
+          version: ${{ env.OSS_CAD_SUITE }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Lint
+        run: make lint TOOLS=
+      - name: cocotb tests (random networks, ONNX models, board system over flash and SDRAM)
+        run: cd tb && python -m pytest -q -ra
+
+  bitstream:
+    name: Tang Nano 20K bitstream
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: YosysHQ/setup-oss-cad-suite@v4
+        with:
+          version: ${{ env.OSS_CAD_SUITE }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Synthesis, place and route (54 MHz)
+        run: make -C fpga/tangnano20k TOP=npu_board_top FREQ_MHZ=54 ENV= | tee build.log
+      - name: Summary
+        run: |
+          {
+            echo '### npu_board_top'
+            echo '```'
+            sed -n '/--- npu_board_top/,$p' build.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npu_board_top-bitstream
+          path: |
+            fpga/tangnano20k/build/npu_board_top/npu_board_top.fs
+            fpga/tangnano20k/build/npu_board_top/nextpnr.log

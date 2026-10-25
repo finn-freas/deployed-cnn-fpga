@@ -4,6 +4,8 @@
 #   make ir       - export the TFLite model to IR + golden tensors (TensorFlow env)
 #   make compile  - compile IR to NPU memory images (build/npu)
 #   make vww      - MLPerf Tiny VWW: build vww01, export IR + golden, compile (build/npu_vww)
+#   make npuc     - compile an ONNX model with npuc (ONNX=..., default: the MNIST example)
+#   make onnx-mnist - retrain the PyTorch MNIST example and quantize it with onnxruntime
 #   make pkg      - regenerate rtl/npu/npu_pkg.sv from sw/npu/isa.py
 #   make lint     - Verilator lint of all portable RTL
 #   make test     - software tests + cocotb RTL tests
@@ -20,8 +22,9 @@ MODEL ?= models/mnist_int8.tflite
 # Portable RTL (no vendor primitives); rtl/gowin is synthesis-only. Packages go first.
 RTL_PKGS     := $(shell find rtl -name '*_pkg.sv' -not -path 'rtl/gowin/*' | sort)
 RTL_MODULES  := $(shell find rtl -name '*.sv' -not -name '*_pkg.sv' -not -path 'rtl/gowin/*' | sort)
+RTL_TOPS     := $(shell sed -n 's/^module \([A-Za-z0-9_]*\).*/\1/p' $(RTL_MODULES))
 
-.PHONY: help env model ir compile vww pkg lint test test-sw test-rtl fpga clean
+.PHONY: help env model ir compile vww npuc onnx-mnist pkg lint test test-sw test-rtl fpga clean
 
 help:
 	@sed -n 's/^#   make /  make /p' Makefile
@@ -61,19 +64,26 @@ build/vww/golden.npz: $(VWW_MODEL) sw/model/export_ir.py build/vww/vww01.npz
 vww: build/vww/golden.npz
 	cd sw && $(PY) -m npu.compiler ../build/vww --out ../build/npu_vww
 
+ONNX ?= models/onnx/mnist_cnn_int8.onnx
+npuc:
+	cd sw && $(PY) -m npuc ../$(ONNX) -o ../build/npuc/$(basename $(notdir $(ONNX))) $(NPUC_ARGS)
+
+onnx-mnist:
+	$(PY) sw/model/make_onnx_mnist.py --out models/onnx
+
 pkg:
 	cd sw && $(PY) -m npu.gen_pkg ../rtl/npu/npu_pkg.sv
 
 lint:
-	@for f in $(RTL_MODULES); do \
+	@for m in $(RTL_TOPS); do \
 		$(TOOLS) verilator --lint-only -Wall -Wno-DECLFILENAME -Wno-MULTITOP \
-			$(RTL_PKGS) $(RTL_MODULES) --top-module $$(basename $$f .sv) >/dev/null || exit 1; \
-		echo "lint ok: $$f"; \
+			$(RTL_PKGS) $(RTL_MODULES) --top-module $$m >/dev/null || exit 1; \
+		echo "lint ok: $$m"; \
 	done
 
 test: test-sw test-rtl
 
-test-sw: ir
+test-sw:
 	cd sw && $(PY) -m pytest -q tests
 
 test-rtl:
