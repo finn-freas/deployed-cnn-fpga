@@ -4,6 +4,7 @@
 ![FPGA](https://img.shields.io/badge/FPGA-Gowin%20GW2AR--18-blue)
 ![Toolchain](https://img.shields.io/badge/toolchain-Yosys%20%2B%20nextpnr-success)
 ![Precision](https://img.shields.io/badge/inference-INT8-orange)
+[![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
 **A custom INT8 neural-network accelerator, its compiler, and a person detector running on a
 $25 FPGA board.** The NPU runs the MLPerf Tiny **Visual Wake Words** model on a Sipeed Tang
@@ -141,3 +142,8 @@ tb/           cocotb testbenches
 fpga/         Tang Nano 20K constraints and build
 docs/         ISA and npuc reference
 ```
+
+## License
+
+MIT, see [LICENSE](LICENSE). The MLPerf Tiny VWW model files in `models/vww/` come from
+[mlcommons/tiny](https://github.com/mlcommons/tiny) under the Apache License 2.0.
