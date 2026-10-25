@@ -17,7 +17,7 @@ for it by [**npuc**](https://github.com/finn-freas/npuc), a separate repository.
 | **Visual Wake Words** | 243,602 cycles (ideal memory), 256,642 from the board's SDRAM: **4.75 ms at 54 MHz** |
 | **Accuracy** | identical to TFLite's int8 reference kernels, every layer, every tested image |
 | **Compiler** | TFLite → NPU program, with a cycle-exact simulator; ONNX via [npuc](https://github.com/finn-freas/npuc) |
-| **Hardware** | 8×8 MAC array, depthwise unit, 2 requantizers; 76% of the GW2AR-18's LUTs, 64 DSP multipliers |
+| **Hardware** | 8×8 MAC array, depthwise unit, 2 requantizers; 77% of the GW2AR-18's LUTs, 64 DSP multipliers |
 | **Board** | boots from SPI flash, weights in SDRAM, images over USB-UART, result on HDMI |
 
 ## How it fits together
@@ -89,8 +89,8 @@ cd sw && python -m npu.compiler ../models/ir/vww --out ../build/npu_vww
 
 | Board design (`npu_board_top`) | |
 |-|-|
-| Utilisation | LUT4 76%, DFF 56%, BSRAM 45/46, 64 DSP multipliers |
-| Fmax after routing | 64.4 MHz NPU domain (runs at 54 MHz), 99 MHz HDMI domain (runs at 25.2 MHz) |
+| Utilisation | LUT4 77%, DFF 55%, BSRAM 45/46, 64 DSP multipliers |
+| Fmax after routing | 62.9 MHz NPU domain (runs at 54 MHz), 91 MHz HDMI domain (runs at 25.2 MHz) |
 
 The optimisation history (cycle-count reductions, the depthwise unit, place-and-route
 fixes) is in [`.gateflow/plans/vww_npu_compiler.md`](.gateflow/plans/vww_npu_compiler.md).
