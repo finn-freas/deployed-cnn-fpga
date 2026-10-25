@@ -1,8 +1,10 @@
 // npu_tile_engine: executes CONV and DWCONV instructions.
 //
 // Memory system (ISA v3):
-//   * params for the whole layer are burst-read from the external store into a param
-//     buffer at the start of the instruction;
+//   * params are burst-read from the external store into a param buffer while the layer
+//     runs, and each job (or depthwise unit) waits only for its own output group's: cached
+//     and depthwise layers load them after the weights, group mode loads each group's after
+//     its weights;
 //   * weights are burst-read into an on-chip weight buffer: the whole layer if it fits
 //     ("cached" mode, tile-outer loop), otherwise one output group at a time ("group"
 //     mode, group-outer loop, inputs re-gathered per group);
@@ -32,7 +34,7 @@
 // one column per cycle, so the row's taps issue on consecutive cycles with no extra reads.
 //
 // Address arithmetic is incremental (no multipliers): the few products of instruction
-// fields are formed once by shift-and-add while the params load.
+// fields are formed once by shift-and-add at the start of the instruction.
 
 `default_nettype none
 
@@ -77,7 +79,7 @@ module npu_tile_engine
 
     // ---------------------------------------------------------------- main FSM
     typedef enum logic [3:0] {
-        S_IDLE, S_INIT, S_PLOAD_REQ, S_PLOAD, S_WLOAD_REQ, S_WLOAD, S_RUN, S_FINISH, S_DONE
+        S_IDLE, S_INIT, S_CONST, S_WLOAD_REQ, S_WLOAD, S_RUN, S_FINISH, S_DONE
     } state_e;
     state_e state;
 
@@ -106,7 +108,7 @@ module npu_tile_engine
         return (b[0] ? 18'(a) : 18'd0) + (b[1] ? 18'(a) << 1 : 18'd0) + (b[2] ? 18'(a) << 2 : 18'd0);
     endfunction
 
-    // shift-and-add multipliers for the larger products (7 steps, overlapped with S_PLOAD)
+    // shift-and-add multipliers for the larger products (7 steps, in S_CONST)
     logic [3:0]  m_cnt;             // 0 idle, 1..7 multiply steps, 8 derived constants
     logic [16:0] m_a1;              // layer_words = out_g * (K or taps)
     logic [13:0] m_a2;              // P = out_h * out_w
@@ -118,6 +120,10 @@ module npu_tile_engine
     logic [16:0] ld_cnt, ld_len;
     logic [WORD_W-1:0] p_word0;
     logic        w_loading;         // a weight burst is landing in the weight buffer
+    logic        p_loading;         // a param burst is landing in the param buffer
+    // param loader for cached and depthwise layers (group mode: the weight loader)
+    typedef enum logic [1:0] {PL_IDLE, PL_REQ, PL_LOAD, PL_DONE} plstate_e;
+    plstate_e    plstate;
 
     // ---------------------------------------------------------------- buffers
     logic                 wb_we;
@@ -199,7 +205,9 @@ module npu_tile_engine
 
     // Gather order: k-word outer, rows inner. Word mode reads one channel-blocked word per
     // (k-word, row). Packed mode (O2): each k-word is a contiguous 8-byte window of one input
-    // row (the compiler pads each kernel row to KR), read as two aligned words (phase 0/1).
+    // row (the compiler pads each kernel row to KR), spanning two aligned words (phase 0/1).
+    // Consecutive windows of a kernel row are 8 bytes apart, so a window's first word is the
+    // previous window's second: only a kernel row's first window reads phase 0.
     logic [2:0]  gr;                // row being read
     logic [10:0] gk;                // k-word
     logic        ph;                // packed mode: which of the two aligned words
@@ -243,7 +251,9 @@ module npu_tile_engine
     logic        d_rowok;
     logic        d_half, d_lastu;    // A_T half of the unit; last read of the unit
     logic [3:0]  d_s, d_e, d_p;
-    logic [WORD_W-1:0] w0;          // packed: first aligned word of the window
+    // packed: the last word read for each tile row (a window's first word: its own phase 0,
+    // or the previous window's phase 1)
+    logic [WORD_W-1:0] w_hist [N];
 
     // double-buffered N x N byte transposer (both modes): rows are written one per cycle,
     // columns read one per cycle. Byte (row r, column c) lives in byte RAM (r + c) mod N at
@@ -262,7 +272,7 @@ module npu_tile_engine
     logic [WORD_W-1:0] pk_row;
     always_comb begin
         logic [WORD_W-1:0]   win;
-        win = WORD_W'({act_rdata, w0} >> (8 * d_sh));
+        win = WORD_W'({act_rdata, w_hist[d_r]} >> (8 * d_sh));
         for (int b = 0; b < N; b++) begin
             if (4'(b) >= d_p)                                pk_row[8 * b +: 8] = 8'd0;   // past the kernel row
             else if (!d_rowok || 4'(b) < d_s || 4'(b) >= d_e) pk_row[8 * b +: 8] = I.in_zp; // padding
@@ -305,17 +315,22 @@ module npu_tile_engine
     logic        c_last_unit;
     logic        c_last_job;
     assign c_last_job = !cached || (c_g == I.out_g - 6'd1);
+    // cached / depthwise: group g's params have landed (16 words per group of N entries)
+    function automatic logic p_ready(input logic [5:0] g);
+        return (plstate == PL_DONE) || (plstate == PL_LOAD && !I.uniform && ld_cnt > 17'({g, 4'hF}));
+    endfunction
 
     // ---------------------------------------------------------------- weight loader (group mode)
     // Loads output groups' weights in order while the consumer streams. With K <= half the
     // buffer (wdbl), group g goes to half g%2 and group g+1 is prefetched during group g;
     // otherwise one group at a time into the whole buffer.
-    typedef enum logic [1:0] {L_IDLE, L_REQ, L_LOAD} lstate_e;
+    typedef enum logic [2:0] {L_IDLE, L_REQ, L_LOAD, L_PREQ, L_PLOAD} lstate_e;
     lstate_e lstate;
     logic       wdbl;
     logic [6:0] lg;                 // next group to load
     logic [15:0] l_waddr;           // its external address
-    logic [6:0] loaded_cnt;         // groups whose weights have fully landed
+    logic [15:0] l_paddr;           // its params' external address
+    logic [6:0] loaded_cnt;         // groups whose weights and params have fully landed
     logic [6:0] cons_done;          // groups the consumer has finished
     logic       l_ok;               // the target half is free
     assign wdbl = (K <= 11'(WBUF_DEPTH / 2));
@@ -374,7 +389,7 @@ module npu_tile_engine
         e_w    = ustart ? cb_wb : w_row;
         rd_inb = e_iy >= 0 && e_iy < 10'(I.in_h) && e_ix >= 0 && e_ix < 10'(I.in_w);
         // a unit's first read is also its first tap (injection): PERIOD_DW after the last
-        rd_go  = !ustart || (dw_more && since_inj >= 8'(PERIOD_DW - 1));
+        rd_go  = !ustart || (dw_more && since_inj >= 8'(PERIOD_DW - 1) && p_ready(dw_cb));
         // stride 1 reads columns 0..9 in order: tap kx = word kx. Stride 2 reads the even
         // columns 0,2..16 then the odd ones 1..15: kx 0 = word 0, kx 2 = word 1, kx 1 = word 9.
         if (!dw_s2) begin
@@ -456,11 +471,13 @@ module npu_tile_engine
         // external loads land in the buffers
         wb_we    = ext_rvalid && w_loading;
         wb_waddr = (!cached && wdbl) ? {lg[0], (WBUF_AW-1)'(ld_cnt)} : WBUF_AW'(ld_cnt);
-        pb_we    = ext_rvalid && (state == S_PLOAD) && ld_cnt[0];
-        pb_waddr = PBUF_AW'(ld_cnt >> 1);
+        pb_we    = ext_rvalid && p_loading && ld_cnt[0];
+        pb_waddr = (lstate == L_PLOAD) ? PBUF_AW'({lg[5:0], 3'b000}) + PBUF_AW'(ld_cnt >> 1)
+                                       : PBUF_AW'(ld_cnt >> 1);
         pb_wdata = {SHIFT_W'(ext_rdata), p_word0[63:32], p_word0[31:0]};
     end
     assign w_loading = (state == S_WLOAD) || (lstate == L_LOAD);
+    assign p_loading = (plstate == PL_LOAD) || (lstate == L_PLOAD);
     assign inj_first = (cstate == C_STREAM && sk == '0) || dw_tap_first;
     assign hand      = (cstate == C_STREAM && sk == K - 11'd1) || dw_tap_last;
 
@@ -490,7 +507,7 @@ module npu_tile_engine
         end
 
         // ---- gather data landing: one row word per (k-word, row), then the transposer
-        if (d_v && pk_mode && !d_ph) w0 <= act_rdata;
+        if (d_v && pk_mode) w_hist[d_r] <= act_rdata;
         if (tb_we) begin
             if (d_r == 3'(N - 1)) begin
                 tb_sel    <= !tb_sel;
@@ -607,6 +624,7 @@ module npu_tile_engine
             dstate     <= D_IDLE;
             wo_active  <= 1'b0;
             ext_req    <= 1'b0;
+            plstate    <= PL_IDLE;
             dr_busy    <= 1'b0;
             dr_run     <= 1'b0;
             tq_v       <= '0;
@@ -652,27 +670,15 @@ module npu_tile_engine
                     m_a4 <= 13'(I.out_w);                          m_b4 <= 7'(I.out_g);
                     m_cnt <= 4'd1;
                     full       <= '0;
-                    state      <= S_PLOAD_REQ;
+                    state      <= S_CONST;
                 end
 
-                S_PLOAD_REQ: begin
-                    ext_req  <= 1'b1;
-                    ext_addr <= EXT_AW'(I.p_base);
-                    ext_len  <= I.uniform ? 16'(PARAM_WORDS) : 16'({I.out_g, 4'b0000});   // entries * PARAM_WORDS
-                    ld_len   <= I.uniform ? 17'(PARAM_WORDS) : 17'({I.out_g, 4'b0000});
-                    ld_cnt   <= '0;
-                    if (ext_req && ext_ack) begin
-                        ext_req <= 1'b0;
-                        state   <= S_PLOAD;
-                    end
-                end
-
-                // (the constants are ready long before the last param word lands)
-                S_PLOAD: if (ld_cnt == ld_len && m_cnt == 0) begin
+                // the constants (layer_words decides the mode)
+                S_CONST: if (m_cnt == 0) begin
                     if (cached) begin
                         state <= S_WLOAD_REQ;
                     end else begin
-                        run_start <= 1'b1;      // group mode: the consumer loads weights per group
+                        run_start <= 1'b1;      // group mode: weights and params per group
                         state     <= S_RUN;
                     end
                 end
@@ -793,12 +799,12 @@ module npu_tile_engine
                     end else if (pk_mode && !ph) begin
                         ph <= 1'b1;                     // second aligned word of this window
                     end else if (gr != 3'(N - 1)) begin
-                        ph <= 1'b0;
+                        ph <= (kj != 0);
                         gr <= gr + 3'd1;
                     end else begin
                         // next k-word: offsets run contiguously along a kernel row (word mode:
                         // kx*in_cb + kc; packed: kj*N), then jump to the next kernel row
-                        ph <= 1'b0;
+                        ph <= pk_mode && !krow_end;     // next window: phase 1 only unless it starts a kernel row
                         gr <= '0;
                         gk <= gk + 11'd1;
                         if (krow_end) begin
@@ -849,7 +855,7 @@ module npu_tile_engine
                     cstate      <= C_INJ_WAIT;
                 end
 
-                C_INJ_WAIT: if (since_inj >= 8'(PERIOD_MIN - 1)) begin
+                C_INJ_WAIT: if (since_inj >= 8'(PERIOD_MIN - 1) && (!cached || p_ready(c_g))) begin
                     sk     <= '0;
                     cstate <= C_STREAM;
                 end
@@ -886,6 +892,7 @@ module npu_tile_engine
                     if (run_start) begin
                         lg         <= '0;
                         l_waddr    <= I.w_base;
+                        l_paddr    <= I.p_base;
                         loaded_cnt <= '0;
                     end else if (state == S_RUN && !cached && l_ok) begin
                         lstate <= L_REQ;
@@ -905,13 +912,55 @@ module npu_tile_engine
                 end
 
                 L_LOAD: if (ld_cnt == ld_len) begin
+                    l_waddr    <= l_waddr + 16'(K);
+                    lstate     <= L_PREQ;
+                end
+
+                // the group's N param entries
+                L_PREQ: begin
+                    ext_req  <= 1'b1;
+                    ext_addr <= EXT_AW'(l_paddr);
+                    ext_len  <= 16'(N * PARAM_WORDS);
+                    ld_len   <= 17'(N * PARAM_WORDS);
+                    ld_cnt   <= '0;
+                    if (ext_req && ext_ack) begin
+                        ext_req <= 1'b0;
+                        lstate  <= L_PLOAD;
+                    end
+                end
+
+                L_PLOAD: if (ld_cnt == ld_len) begin
                     loaded_cnt <= lg + 7'd1;
                     lg         <= lg + 7'd1;
-                    l_waddr    <= l_waddr + 16'(K);
+                    l_paddr    <= l_paddr + 16'(N * PARAM_WORDS);
                     lstate     <= L_IDLE;
                 end
 
                 default: lstate <= L_IDLE;
+            endcase
+
+            // ======================================================== param loader
+            // (cached and depthwise layers: the weights have landed, the port is free)
+            unique case (plstate)
+                PL_IDLE: if (run_start && cached) plstate <= PL_REQ;
+
+                PL_REQ: begin
+                    ext_req  <= 1'b1;
+                    ext_addr <= EXT_AW'(I.p_base);
+                    ext_len  <= I.uniform ? 16'(PARAM_WORDS) : 16'({I.out_g, 4'b0000});   // entries * PARAM_WORDS
+                    ld_len   <= I.uniform ? 17'(PARAM_WORDS) : 17'({I.out_g, 4'b0000});
+                    ld_cnt   <= '0;
+                    if (ext_req && ext_ack) begin
+                        ext_req <= 1'b0;
+                        plstate <= PL_LOAD;
+                    end
+                end
+
+                PL_LOAD: if (ld_cnt == ld_len) plstate <= PL_DONE;
+
+                PL_DONE: if (state == S_DONE) plstate <= PL_IDLE;
+
+                default: plstate <= PL_IDLE;
             endcase
 
             // ======================================================== depthwise streamer

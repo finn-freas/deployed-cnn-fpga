@@ -29,6 +29,8 @@ DRAIN_DONE = DRAIN_DELAY + N * N // 2 + 4 + 2   # handover -> drain + requant pi
 PERIOD_DW, DRAIN_DONE_DW = PERIOD_MIN, DRAIN_DONE
 DW_K = (2, 3)                      # depthwise unit kernel sizes (SEG = 7*stride + 3 words per row)
 POOL_INIT = 1 + 7                  # npu_pool: S_INIT + shift-and-add of in_w * in_cb
+CONST_WAIT = 9                     # npu_tile_engine S_CONST: shift-and-add constants
+GROUP_PARAM_WORDS = N * isa.PARAM_WORDS
 
 # External store (rtl/sim/ext_mem_model.sv defaults, as instantiated by npu_sim_top)
 EXT_LATENCY = 6
@@ -38,6 +40,14 @@ EXT_CYCLES_PER_WORD = 2
 def ext_load_cycles(words: int) -> int:
     """Request handshake + latency + burst, until the engine sees the last word."""
     return EXT_LATENCY + 5 - EXT_CYCLES_PER_WORD + words * EXT_CYCLES_PER_WORD
+
+
+def param_visible(start: int, g: int, param_words: int, uniform: bool = False) -> int:
+    """Param loader (cached / depthwise), request issued at `start`: the cycle a job or unit
+    of output group g first sees its params (PL_LOAD counting words; uniform: PL_DONE)."""
+    if uniform:
+        return start + ext_load_cycles(param_words)
+    return start + ext_load_cycles(min(GROUP_PARAM_WORDS * (g + 1), param_words)) - 1
 
 
 def tile_engine_cycles(*, K: int, G: int, tiles: int, gather_issue: int, gather_tail: int,
@@ -50,9 +60,10 @@ def tile_engine_cycles(*, K: int, G: int, tiles: int, gather_issue: int, gather_
     releases the half. Injections must be PERIOD_MIN cycles apart; every wait state lasts at
     least one cycle; a flag set in a state's last cycle is visible the cycle after.
     """
-    t = 1 + ext_load_cycles(param_words)                      # S_INIT, params
+    t = 1 + CONST_WAIT                                        # S_INIT, S_CONST
     if cached:
         t += ext_load_cycles(weight_words)                    # whole layer's weights
+    p_start = t + 1                                           # cached: param loader requests
     # units in order: (tile index, group, new_tile, needs_weight_load)
     if cached:
         units = [(ti, 0, True, False) for ti in range(tiles)]
@@ -65,9 +76,9 @@ def tile_engine_cycles(*, K: int, G: int, tiles: int, gather_issue: int, gather_
     p_t = t + 1                         # producer: first P_WAIT_BUF cycle
     c_t = t + 1                         # consumer: first C_WAIT_FULL cycle
     last_inj = -10**9
-    # group-mode weight loader: group g's load ends (last L_LOAD cycle) at load_end[g]; it may
-    # start once the previous load is done and its buffer half is free (group g-2 finished
-    # with the half-buffer prefetch, g-1 without it)
+    # group-mode loader: group g's weights then its params; the params' last L_PLOAD cycle is
+    # load_end[g]. A group's load may start once the previous one is done and its buffer half
+    # is free (group g-2 finished with the half-buffer prefetch, g-1 without it)
     wdbl = K <= isa.WBUF_DEPTH // 2
     load_end = {-1: t}                  # t = first S_RUN cycle - 1 ... (run_start seen at t)
     group_done = {}                     # cycle the consumer's "group finished" is visible
@@ -78,7 +89,8 @@ def tile_engine_cycles(*, K: int, G: int, tiles: int, gather_issue: int, gather_
             free_g = g - (2 if wdbl else 1)
             permit = group_done[free_g] if free_g >= 0 else 0
             start = max(load_end[g - 1] + 1, permit) + 1                # L_IDLE -> L_REQ
-            load_end[g] = start + ext_load_cycles(K) - 1
+            w_end = start + ext_load_cycles(K) - 1
+            load_end[g] = w_end + ext_load_cycles(GROUP_PARAM_WORDS)       # L_PREQ, L_PLOAD
         return load_end[g] + 1
 
     for u, (ti, g, new_tile, wload) in enumerate(units):
@@ -89,8 +101,9 @@ def tile_engine_cycles(*, K: int, G: int, tiles: int, gather_issue: int, gather_
         p_t = last + 1                                        # next unit starts right away
         # ---- consumer streams unit u (group mode: once its group's weights have landed)
         s = max(c_t, ready[u], load_visible(g) if not cached else 0) + 1   # C_WAIT_FULL passes
-        for _ in range(jobs_per_unit):
-            inj = max(s, last_inj + PERIOD_MIN) + 1           # C_INJ_WAIT passes; C_STREAM
+        for j in range(jobs_per_unit):
+            p_ok = param_visible(p_start, j, param_words) if cached else 0
+            inj = max(s, last_inj + PERIOD_MIN, p_ok) + 1     # C_INJ_WAIT passes; C_STREAM
             last_inj = inj
             s = inj + K + 1                                   # stream K, C_NEXT
         release[u] = s                                        # released in the last C_NEXT
@@ -102,19 +115,24 @@ def tile_engine_cycles(*, K: int, G: int, tiles: int, gather_issue: int, gather_
     return t + INSTR_OVERHEAD - 1
 
 
-def dw_engine_cycles(*, ksize: int, stride: int, units: int, param_words: int,
-                     weight_words: int) -> int:
+def dw_engine_cycles(*, ksize: int, stride: int, units: int, blocks: int, param_words: int,
+                     weight_words: int, uniform: bool) -> int:
     """npu_tile_engine in depthwise mode: a unit (N pixels of an output row x one channel
     block) reads ksize kernel rows of SEG words, one per cycle, each tap issued with the read
     of its word; its first read is its first tap (the injection), and injections are at least
     PERIOD_DW apart. The drain takes the last unit with its last tap: word ksize-1 (stride 1)
     or word 9 (stride 2, where the odd columns follow the even ones) of its last kernel row.
     (The previous instruction's last injection is always long past, so the first unit starts
-    at once.)"""
+    at once.) Units run channel block by channel block; a block's first unit also waits for
+    its params, which load after the weights."""
     seg = 7 * stride + 3
-    t = 1 + ext_load_cycles(param_words) + ext_load_cycles(weight_words)   # run_start seen
+    t = 1 + CONST_WAIT + ext_load_cycles(weight_words)   # run_start seen
     period = max(ksize * seg, PERIOD_DW)
-    t0_last = t + 1 + (units - 1) * period            # last unit's first read
+    per_block = units // blocks
+    t0_last = t + 1 - period
+    for b in range(blocks):
+        t0_last = max(t0_last + period, param_visible(t + 1, b, param_words, uniform))
+        t0_last += (per_block - 1) * period           # the block's last unit's first read
     last_word = ksize - 1 if stride == 1 else 9
     hand = t0_last + (ksize - 1) * seg + last_word    # its last tap
     t = hand + DRAIN_DONE_DW + 1
@@ -259,8 +277,8 @@ class NpuSim:
         self._write_out(ins, self._requant(ins, acc, G))
 
         tiles = -(-P // N)
-        if ins.in_src:   # packed (O2): two aligned word reads per (k-word, row), then the transposer
-            issue, tail = 2 * K, GATHER_TAIL_WORD
+        if ins.in_src:   # packed (O2): per (kernel row, row) its first window reads two aligned words, the rest one
+            issue, tail = K + N * ins.ksize, GATHER_TAIL_WORD
         else:            # one word per cycle through the transposer
             issue, tail = N * (K // N), GATHER_TAIL_WORD
         self.stats.cycles.append(tile_engine_cycles(
@@ -286,7 +304,8 @@ class NpuSim:
         assert ins.ksize in DW_K and ins.stride in (1, 2) and cb * T <= isa.WBUF_DEPTH
         self.stats.cycles.append(dw_engine_cycles(
             ksize=ins.ksize, stride=ins.stride, units=cb * ins.out_h * -(-ins.out_w // N),
-            param_words=(1 if ins.uniform else cb * N) * isa.PARAM_WORDS, weight_words=nb * T))
+            blocks=cb, param_words=(1 if ins.uniform else cb * N) * isa.PARAM_WORDS,
+            weight_words=nb * T, uniform=bool(ins.uniform)))
         self.stats.macs.append(P * T * cb * N)
 
     def _maxpool(self, ins: Instr):
