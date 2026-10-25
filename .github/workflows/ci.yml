@@ -82,3 +82,12 @@ jobs:
           path: |
             fpga/tangnano20k/build/npu_board_top/npu_board_top.fs
             fpga/tangnano20k/build/npu_board_top/nextpnr.log
+      - name: Bring-up bitstream (docs/bringup.md)
+        shell: bash
+        run: make -C fpga/tangnano20k TOP=bringup_top FREQ_MHZ=54 ENV= | tee bringup.log
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bringup-bitstream
+          path: |
+            fpga/tangnano20k/build/bringup_top/bringup_top.fs
+            fpga/tangnano20k/build/bringup_top/nextpnr.log

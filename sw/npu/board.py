@@ -50,6 +50,11 @@ def flash_words(prog, image_u8: np.ndarray) -> list[int]:
     return ext + [0] * (BOOT_W - len(ext)) + boot_words(prog, image_u8)
 
 
+def image_sum(words) -> int:
+    """The bring-up flash check (rtl/board/bringup.sv): sum of every 32-bit half, mod 2^32."""
+    return sum((int(w) & 0xFFFFFFFF) + (int(w) >> 32) for w in words) & 0xFFFFFFFF
+
+
 def load_image(path: Path, h: int, w: int, c: int) -> np.ndarray:
     if path.suffix == ".npy":
         return np.load(path).astype(np.uint8).reshape(h, w, c)
@@ -61,7 +66,9 @@ def load_image(path: Path, h: int, w: int, c: int) -> np.ndarray:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model_dir", type=Path)
-    ap.add_argument("--image", type=Path, help="demo image (png/jpg/npy); default: golden image 0")
+    ap.add_argument("--image", type=Path,
+                    help="demo image (png/jpg/npy); default: golden image 0 if the model directory "
+                         "has golden.npz, else mid-grey")
     ap.add_argument("--out", type=Path, default=Path("build/board/flash.bin"))
     ap.add_argument("--program", action="store_true", help="write it to the board's flash")
     ap.add_argument("--pool", action="store_true",
@@ -73,15 +80,20 @@ def main():
     m = prog.meta["input"]
     if args.image:
         img = load_image(args.image, m["h"], m["w"], m["c"])
-    else:
+    elif (args.model_dir / "golden.npz").exists():
         img = np.load(args.model_dir / "golden.npz")["images"][0]
+    else:
+        print("no --image and no golden.npz: the demo image is mid-grey")
+        img = np.full((m["h"], m["w"], m["c"]), 128, np.uint8)
     words = flash_words(prog, img)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_bytes(np.array(words, dtype="<u8").tobytes())
     print(f"{args.out}: {len(words) * 8 / 1024:.0f} KiB ({len(prog.ext_words())} external-store words, "
-          f"{len(prog.instrs)} instructions) for flash offset {FLASH_BASE:#x}")
+          f"{len(prog.instrs)} instructions) for flash offset {FLASH_BASE:#x}; "
+          f"bring-up flash check: header {words[BOOT_W]:016x}, sum {image_sum(prog.ext_words()):08x}")
     if args.program:
-        subprocess.run(["openFPGALoader", "-b", "tangnano20k", "--external-flash", "-o",
+        # --external-flash writes the raw image at the offset (the bitstream at 0 is untouched)
+        subprocess.run(["openFPGALoader", "-b", "tangnano20k", "--external-flash", "--verify", "-o",
                         str(FLASH_BASE), str(args.out)], check=True)
 
 

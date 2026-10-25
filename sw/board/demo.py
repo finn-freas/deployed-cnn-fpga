@@ -17,7 +17,7 @@ import time
 import numpy as np
 
 SIZE = 96
-CLK_HZ = 25_200_000
+CLK_HZ = 54_000_000          # npu_board_top NPU clock
 
 
 def to_input(bgr) -> np.ndarray:

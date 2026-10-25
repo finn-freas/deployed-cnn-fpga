@@ -97,6 +97,10 @@ fixes) is in [`.gateflow/plans/vww_npu_compiler.md`](.gateflow/plans/vww_npu_com
 
 ## Running on the board
 
+First time: follow the step-by-step [bring-up checklist](docs/bringup.md). A small
+bring-up bitstream and `sw/board/board_check.py` check the UART, the SDRAM and the flash
+one at a time, then compare the NPU's results on the board with the simulator.
+
 ```bash
 make -C fpga/tangnano20k TOP=npu_board_top FREQ_MHZ=54        # bitstream (or download it from CI)
 make -C fpga/tangnano20k TOP=npu_board_top prog               # write it to flash

@@ -56,6 +56,12 @@ SRCS_npu_probe_small_top := $(NPU_SRCS) npu_probe_small_top.sv
 SRCS_npu_board_top := $(NPU_SRCS) 	$(ROOT)/rtl/common/reset_sync.sv 	$(ROOT)/rtl/common/spi_flash_reader.sv 	$(ROOT)/rtl/board/uart.sv 	$(ROOT)/rtl/board/sdram_ctrl.sv 	$(ROOT)/rtl/board/npu_system.sv 	$(ROOT)/rtl/board/status_cdc.sv 	$(ROOT)/rtl/common/sdpram_dc.sv 	$(ROOT)/rtl/board/bin2bcd.sv 	$(ROOT)/rtl/board/font_rom.sv 	$(ROOT)/rtl/board/npu_display.sv 	$(ROOT)/rtl/video/video_timing.sv 	$(ROOT)/rtl/video/tmds_encoder.sv 	$(ROOT)/rtl/video/dvi_tx.sv 	npu_board_top.sv
 PACK_ARGS_npu_board_top := --mspi_as_gpio
 
+# Board bring-up: UART, SDRAM and flash checks with the same pins and controllers (docs/bringup.md)
+SRCS_bringup_top := $(ROOT)/rtl/npu/npu_pkg.sv $(ROOT)/rtl/common/reset_sync.sv \
+	$(ROOT)/rtl/common/spi_flash_reader.sv $(ROOT)/rtl/board/uart.sv \
+	$(ROOT)/rtl/board/sdram_ctrl.sv $(ROOT)/rtl/board/bringup.sv bringup_top.sv
+PACK_ARGS_bringup_top := --mspi_as_gpio
+
 SRCS := $(SRCS_$(TOP))
 
 .PHONY: all flash prog clean

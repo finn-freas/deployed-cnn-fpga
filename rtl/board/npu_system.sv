@@ -123,7 +123,8 @@ module npu_system
 
     // SDRAM: written by the boot copy, read by the core
     /* verilator lint_off UNUSEDSIGNAL */  // half of these are unused in each configuration
-    logic        m_ready, m_cal_err, m_rd_ack, m_rvalid, m_wr_req, m_wr_ack;
+    logic        m_ready, m_cal_err, m_rd_ack, m_rvalid, m_wr_req, m_wr_ack, m_idle;
+    logic [1:0]  m_cal_rl;
     logic [63:0] m_rdata;
     logic [16:0] m_wr_addr;
     logic [31:0] ext_words;
@@ -131,7 +132,7 @@ module npu_system
 
     if (EXT_SDRAM) begin : g_sdram
         sdram_ctrl #(.CLK_HZ(CLK_HZ)) u_sdram (
-            .clk, .rst, .ready(m_ready), .cal_err(m_cal_err),
+            .clk, .rst, .ready(m_ready), .cal_err(m_cal_err), .cal_rl(m_cal_rl), .idle(m_idle),
             .rd_req(e_req && !ld_own), .rd_addr(17'(e_addr)), .rd_len(e_len), .rd_ack(m_rd_ack),
             .rvalid(m_rvalid), .rdata(m_rdata),
             .wr_req(m_wr_req), .wr_addr(m_wr_addr), .wr_data(r_rdata), .wr_ack(m_wr_ack),
@@ -146,7 +147,7 @@ module npu_system
             e_rdata  = m_rdata;
         end
     end else begin : g_flash
-        assign {m_ready, m_cal_err, m_rd_ack, m_rvalid, m_wr_ack, m_rdata} = '0;
+        assign {m_ready, m_cal_err, m_rd_ack, m_rvalid, m_wr_ack, m_rdata, m_idle, m_cal_rl} = '0;
         assign {sd_cke, sd_cs_n, sd_ras_n, sd_cas_n, sd_we_n, sd_ba, sd_addr, sd_dqm} = '1;
         assign {sd_dq_o, sd_dq_oe} = '0;
         always_comb begin

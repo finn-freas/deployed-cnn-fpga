@@ -2,3 +2,4 @@ cocotb==2.1.0
 numpy>=2.0
 pytest
 pillow
+pyserial

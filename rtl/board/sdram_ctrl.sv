@@ -24,6 +24,8 @@ module sdram_ctrl #(
     input  wire logic        rst,
     output      logic        ready,         // initialised and calibrated
     output      logic        cal_err,
+    output      logic [1:0]  cal_rl,        // calibrated read latency - (CAS - 1)
+    output      logic        idle,          // no access in progress
     // read stream (like the NPU's external-store port)
     input  wire logic        rd_req,
     input  wire logic [16:0] rd_addr,       // 64-bit word address
@@ -31,7 +33,8 @@ module sdram_ctrl #(
     output      logic        rd_ack,
     output      logic        rvalid,
     output      logic [63:0] rdata,
-    // single-word writes (wr_data held until the next request)
+    // single-word writes: wr_data must stay stable from the request until `idle` returns
+    // (it is driven onto DQ after the row activation, a few cycles after wr_ack)
     input  wire logic        wr_req,
     input  wire logic [16:0] wr_addr,
     input  wire logic [63:0] wr_data,
@@ -120,6 +123,9 @@ module sdram_ctrl #(
     assign rvalid = (st == RD_RUN || st == RD_DRAIN) && beat_v && beat[0] && skip == 0
                     && words_left != 0;
     assign rdata  = {dq_q, lo};
+
+    assign cal_rl = rl_sel;
+    assign idle   = (st == IDLE);
 
     assign rd_ack = (st == IDLE) && ready && rd_req && !ref_due && !wr_req && rd_len != 0;
     assign wr_ack = (st == IDLE) && ready && wr_req && !ref_due;
