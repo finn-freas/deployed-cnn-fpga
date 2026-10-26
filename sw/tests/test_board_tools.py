@@ -81,3 +81,54 @@ def test_infer_rejects_a_short_or_wrong_reply():
     for reply in (b"", b"\xa5\x01", b"\x00" * 7):
         with pytest.raises(IOError):
             infer(EchoPort(reply), np.zeros((96, 96, 3), np.uint8))
+
+
+# ---------------------------------------------------------------- flash image (npu.board)
+
+def _fake_program(n_instrs, ext_len=3, h=2, w=3, c=1, base=7):
+    from types import SimpleNamespace
+    from npu.isa import Instr, Op
+    ins = [Instr(op=list(Op)[0]) for _ in range(n_instrs)]
+    return SimpleNamespace(meta={"input": {"h": h, "w": w, "c": c, "base": base}}, instrs=ins,
+                           ext_words=lambda: list(range(1, ext_len + 1)))
+
+
+def test_boot_words_header_and_layout():
+    from npu import board, isa
+    prog = _fake_program(3)
+    img = np.arange(6, dtype=np.uint8)
+    words = board.boot_words(prog, img)
+    beats = 3 * (isa.INSTR_W // 32)
+    beats += beats % 2
+    hdr = words[0]
+    assert hdr & 0xFFFF == beats
+    assert (hdr >> 16) & 0xFFFF == 7                  # input base
+    assert (hdr >> 32) & 0xFFFF == 1                  # image words (6 bytes -> 1 word)
+    assert (hdr >> 48) & 0x7F == 3 and (hdr >> 55) & 0x7 == 1
+    assert hdr >> 58 == board.MAGIC
+    assert words[1] == 3                              # external-store length
+    assert len(words) == 2 + beats // 2 + 1
+    assert words[-1].to_bytes(8, "little") == bytes(range(6)) + b"\0\0"
+
+
+def test_flash_words_pads_the_external_store_to_the_boot_block():
+    from npu import board
+    prog = _fake_program(1)
+    words = board.flash_words(prog, np.zeros(6, np.uint8))
+    assert words[:3] == [1, 2, 3] and not any(words[3:board.BOOT_W])
+    assert words[board.BOOT_W:] == board.boot_words(prog, np.zeros(6, np.uint8))
+
+
+def test_image_sum_adds_both_halves_mod_2_32():
+    from npu.board import image_sum
+    assert image_sum([]) == 0
+    assert image_sum([0x0000_0002_0000_0001]) == 3
+    assert image_sum([0xFFFF_FFFF_FFFF_FFFF, 2]) == (0xFFFF_FFFF * 2 + 2) & 0xFFFF_FFFF
+
+
+def test_load_image_reshapes_npy(tmp_path):
+    from npu.board import load_image
+    f = tmp_path / "x.npy"
+    np.save(f, np.arange(12).reshape(2, 6))
+    out = load_image(f, 2, 2, 3)
+    assert out.shape == (2, 2, 3) and out.dtype == np.uint8 and out[1, 1, 2] == 11
