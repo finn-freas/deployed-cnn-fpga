@@ -1,0 +1,43 @@
+"""Host-side helpers of sw/board/board_check.py, against a fake serial port."""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "board"))
+from board_check import dq_lines, read_exact, read_line  # noqa: E402
+
+
+class FakePort:
+    """Hands out its bytes one read at a time, like a serial port with a short timeout."""
+
+    def __init__(self, data: bytes):
+        self.data = bytearray(data)
+
+    def read(self, n=1):
+        out, self.data = bytes(self.data[:n]), self.data[n:]
+        return out
+
+
+def test_dq_lines_names_the_differing_pins():
+    assert dq_lines(0x1, 0x0) == "DQ0"
+    # bits 3 and 35 are the same DQ line, on the two beats of a word
+    assert dq_lines(1 << 35, 0) == "DQ3"
+    assert dq_lines((1 << 35) | (1 << 3), 0) == "DQ3"
+    assert dq_lines(0b101, 0) == "DQ0, DQ2"
+
+
+def test_dq_lines_many_bits():
+    assert dq_lines(0xFFFF_FFFF_FFFF_FFFF, 0) == "almost every bit"
+
+
+def test_read_line_skips_blank_lines():
+    assert read_line(FakePort(b"\r\n\npong\r\nnext\n"), 0.05) == "pong"
+
+
+def test_read_line_returns_partial_text_on_timeout():
+    assert read_line(FakePort(b"SDRAM: rea"), 0.05) == "SDRAM: rea"
+    assert read_line(FakePort(b""), 0.05) == ""
+
+
+def test_read_exact_stops_at_the_timeout():
+    assert read_exact(FakePort(b"\xa5\x01\x02"), 7, 0.05) == b"\xa5\x01\x02"
