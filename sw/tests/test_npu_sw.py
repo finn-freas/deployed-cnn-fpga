@@ -11,8 +11,9 @@ import pytest
 from npu import isa
 from npu.compiler import compile_ir, load_ir
 from npu.isa import FIELDS, Instr, Op
-from npu.quant import (INT32_MAX, INT32_MIN, multiply_by_quantized_multiplier,
-                       quantize_multiplier, rounding_divide_by_pot, srdhm)
+from npu.quant import (INT32_MAX, INT32_MIN, RMODE_SINGLE, effective_scale,
+                       multiply_by_quantized_multiplier, quantize_multiplier,
+                       requantize, rounding_divide_by_pot, srdhm, wrap32)
 from npu.sim import NpuSim
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -129,6 +130,54 @@ def test_quantize_multiplier():
     m, s = quantize_multiplier(0.99999999999999)      # rounds up to 2^31 -> renormalized
     assert m == 1 << 30 and s == 1
 
+
+
+def test_quantize_multiplier_extreme_scales():
+    assert quantize_multiplier(2.0 ** -40) == (0, 0)             # shift < -31 flushes to zero
+    assert quantize_multiplier(2.0 ** 40) == (INT32_MAX, 30)     # shift > 30 saturates
+    m, s = quantize_multiplier(2.0 ** -31)
+    assert (m, s) == (1 << 30, -30)
+
+
+def test_wrap32_wraps_like_int32():
+    xs = [0, 1, -1, INT32_MAX, INT32_MIN, INT32_MAX + 1, INT32_MIN - 1, 1 << 40]
+    assert list(wrap32(xs)) == [0, 1, -1, INT32_MAX, INT32_MIN, INT32_MIN, INT32_MAX, 0]
+
+
+def test_effective_scale_rounds_inputs_to_float32():
+    got = effective_scale(0.1, 0.2, 0.3)
+    f32 = lambda v: float(np.float32(v))
+    assert got == f32(0.1) * f32(0.2) / f32(0.3)
+    assert got != 0.1 * 0.2 / 0.3
+
+
+def test_requantize_clamps_and_applies_zero_point():
+    mult, shift = quantize_multiplier(0.5)
+    acc = np.array([-1000, -3, 0, 3, 1000])
+    out = requantize(acc, 0, mult, shift, 5, -128, 127)
+    assert out.dtype == np.int8
+    assert list(out) == [-128, 4, 5, 7, 127]                      # +5 zero point, clamped to int8
+    clamped = requantize(acc, 0, mult, shift, 0, -10, 10)
+    assert list(clamped) == [-10, -1, 0, 2, 10]
+
+
+def test_requantize_bias_is_added_before_scaling():
+    mult, shift = quantize_multiplier(0.5)
+    assert list(requantize(np.array([0, 10]), np.array([20, -10]), mult, shift, 0, -128, 127)) == [10, 0]
+
+
+def test_requantize_single_and_double_rounding_differ():
+    # x * 0.25: double rounding rounds twice (-2 -> -1, 1 -> 1); single rounding once (-2 -> 0, 1 -> 0)
+    mult, shift = quantize_multiplier(0.25)
+    x = np.array([-2, 1])
+    assert list(requantize(x, 0, mult, shift, 0, -128, 127)) == [-1, 1]
+    assert list(requantize(x, 0, mult, shift, 0, -128, 127, RMODE_SINGLE)) == [0, 0]
+
+
+def test_requantize_rejects_int32_overflow():
+    mult, shift = quantize_multiplier(0.5)
+    with pytest.raises(AssertionError, match="int32 overflow"):
+        requantize(np.array([INT32_MAX]), 1, mult, shift, 0, -128, 127)
 
 
 # ---------------------------------------------------------------- compiler + simulator vs TFLite
