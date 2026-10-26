@@ -37,7 +37,7 @@ def infer(port, rgb: np.ndarray):
     if len(reply) != 7 or reply[0] != 0xA5:
         raise IOError(f"bad reply from the board: {reply!r}")
     cycles = int.from_bytes(reply[3:7], "little")
-    score = int(np.int8(reply[2]))
+    score = int.from_bytes(reply[2:3], "little", signed=True)
     return reply[1] == 1, score, cycles / CLK_HZ * 1e3, (time.perf_counter() - t0) * 1e3
 
 
