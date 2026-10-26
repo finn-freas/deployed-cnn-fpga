@@ -196,3 +196,19 @@ def test_cycle_estimate_report(name):
         print(f"{ins.op.name:8s} {ins.comment:26s} {c:8d} cycles {m:9d} MACs")
     print(f"{name}: total {total} cycles = {total / 25.2:.0f} us @ 25.2 MHz; {macs} MACs; "
           f"utilization {macs / (total * isa.N * isa.N):.1%}")
+
+
+# ---------------------------------------------------------------- random networks
+
+def test_random_nets_are_seeded_and_run_in_the_simulator():
+    from npu.randnet import random_image, random_ir
+    ir0, arr0 = random_ir(3)
+    ir1, arr1 = random_ir(3)
+    assert ir0 == ir1 and arr0.keys() == arr1.keys()
+    assert all(np.array_equal(arr0[k], arr1[k]) for k in arr0)
+    for seed in range(8):
+        ir, arrays = random_ir(seed)
+        prog = compile_ir(ir, arrays)
+        cls, _ = NpuSim.from_program(prog).run(random_image(ir, seed))
+        assert 0 <= cls < ir["layers"][-1]["out_shape"][2]
+        assert ir["layers"][-1]["out_shape"][:2] == [1, 1]
