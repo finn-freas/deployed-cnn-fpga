@@ -38,8 +38,7 @@ only four instructions:
 - **MAXPOOL**
 - **ARGMAX**: picks the biggest output, which is the answer
 
-Average pooling isn't its own instruction. The compiler turns it into a DWCONV where all the
-weights are 1. The instruction format is in [docs/isa.md](docs/isa.md).
+The instruction format is in [docs/isa.md](docs/isa.md).
 
 **Memory.** The image and the outputs of each layer (the feature maps) stay inside the FPGA
 in a 56 KiB memory. The weights are too big for that, so at power-up they get copied from
