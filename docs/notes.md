@@ -1,7 +1,7 @@
 # Design notes
 
-Things I learned getting VWW onto the GW2AR-18, roughly in order. Cycle counts are for one
-VWW inference with ideal memory unless I say otherwise.
+How the design got to its current speed and size on the GW2AR-18. Cycle counts are for one
+VWW inference with ideal memory unless noted otherwise.
 
 ## Getting the cycle count down
 
@@ -20,31 +20,31 @@ checked bit-exact against TFLite and against the simulator's cycle model before 
 | row-skew-only array (drain 38 -> 34 cycles per job) | 258,808 |
 | parameters stream during the layer, packed-input words reused | **243,602** |
 
-The depthwise layers were the biggest single chunk: 128k cycles before the depthwise mode,
-71.5k after. A depthwise unit is 8 neighbouring output pixels of one row times one channel
+The depthwise mode took the depthwise layers from 128k cycles to 71.5k. A depthwise unit is 8 neighbouring output pixels of one row times one channel
 block, and the PEs get their inputs straight from the activation memory reads.
 
 Where the remaining time goes: the two requant pipelines need at least 34 cycles for a job's
 64 outputs, which limits the small pointwise layers and the stride-1 depthwise layers.
 Stride-2 depthwise is limited by memory reads instead.
 
-## The placer that "hung"
+## DSPs and address math
 
-At some point nextpnr just stopped making progress. With
-`--placer-heap-cell-placement-timeout` it finally said "Unable to find legal placement for
+nextpnr can stall without an error when a cell can't be placed. With
+`--placer-heap-cell-placement-timeout` it reports "Unable to find legal placement for
 cell ... MULT9X9": a multiplier in the pool unit's address math. The default timeout grows
-with the square of the cell count, so it looks exactly like a hang. I rewrote all address
+with the square of the cell count, which is why it looks like a hang. I write all address
 arithmetic as counters or shift-and-add, so the only DSPs left are the 64 PEs and the two
 requant multipliers.
 
-## The second wall: LUT positions
+## Register packing on Gowin
 
-After that it still wouldn't place, and this one took a while to understand. On Gowin a
+On Gowin a
 flip-flop's D input can only come from the LUT in its own slice. So any register fed by
 another register (or by a RAM, or by a LUT that already drives a different register) gets a
 pass-through LUT, and the utilisation report doesn't count those. Real demand is
-LUT + ALU + those registers, and mine was **21.4k of 20.7k**. I confirmed it on a small probe
-design where every flip-flop ended up behind its own LUT.
+LUT + ALU + those registers, and at one point mine was **21.4k of 20.7k**, so the design
+couldn't place even though the report showed room. A small probe design confirmed it: every
+flip-flop fed by a register ended up behind its own LUT.
 
 What got it down to 15.6k (75%):
 
@@ -59,9 +59,9 @@ What got it down to 15.6k (75%):
   needs exactly the word that's arriving from memory, and every tap is issued with the read
   of its word (stride 2 reads even columns before odd ones)
 
-The board design now sits at about 81.6% real demand, and from experience it stops placing
-at around 83%. So every RTL change has to pay for itself. Removing register copies is
-usually the cheapest win.
+The board design now sits at about 81.6% real demand, and it stops placing at around 83%,
+so any RTL addition has to be paid for somewhere else. Removing register copies is usually
+the cheapest way.
 
 ## Board system
 
@@ -72,7 +72,7 @@ clocks with a toggle handshake, and the thumbnail goes through a dual-clock BRAM
 
 Running weights straight from the 1-bit SPI flash would have taken 4.23M cycles, so the
 board copies them into SDRAM at boot. From SDRAM, VWW takes 256,642 cycles (4.75 ms). The
-SDRAM read latency is calibrated at boot because I couldn't be sure of the board's timing.
+SDRAM read latency is calibrated at boot instead of being fixed in the design.
 
 ## Tried and dropped
 

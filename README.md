@@ -10,16 +10,14 @@ The model is the MLPerf Tiny Visual Wake Words reference (MobileNetV1 0.25, 96x9
 kernels bit for bit, on every layer, not just the final class. Everything is built with the
 open-source flow (Yosys, nextpnr, Verilator, cocotb), no vendor IDE.
 
-Numbers so far:
+- VWW takes 243,602 cycles with ideal memory and 256,642 with the weights in the board's
+  SDRAM, so **4.75 ms per image at 54 MHz**
+- 8x8 MAC array with a depthwise mode and 2 requantizers, using 77% of the LUTs and 64 DSP
+  multipliers
+- the board build closes at 64 MHz after routing and runs at 54
 
-- VWW: 243,602 cycles with ideal memory, 256,642 with weights coming from the board's SDRAM,
-  so **4.75 ms per image at 54 MHz**
-- 8x8 MAC array + depthwise mode + 2 requantizers, using 77% of the LUTs and 64 DSP multipliers
-- board build closes at 64 MHz after routing (runs at 54)
-
-Status: everything passes in simulation, including the whole board system with flash and
-SDRAM models. The board just arrived, so hardware bring-up is in progress
-([docs/bringup.md](docs/bringup.md)).
+Everything passes in simulation, including the whole board system with flash and SDRAM
+models. I'm bringing it up on the real board now ([docs/bringup.md](docs/bringup.md)).
 
 ## How it fits together
 
@@ -48,28 +46,37 @@ flowchart LR
     cam["webcam<br/>sw/board/demo.py"] -->|UART| sys
 ```
 
-## The hardware
+## How the NPU works
 
-The ISA is small: CONV (which also covers the packed first layer and fully connected
-layers), DWCONV, MAXPOOL and ARGMAX. Average pooling and 1x1 depthwise layers get lowered by
-the compiler. Details in [docs/isa.md](docs/isa.md).
+The NPU runs one layer per instruction. There are four: CONV (which also covers the packed
+first layer and fully connected layers), DWCONV, MAXPOOL and ARGMAX. The compiler turns
+average pooling into a DWCONV with all-ones weights and 1x1 depthwise layers into a CONV.
+The encoding is in [docs/isa.md](docs/isa.md).
 
-Some design decisions:
+Feature maps stay on chip in a 56 KiB activation memory. The compiler places each layer's
+input and output so they fit there together. The weights and per-channel parameters (bias, multiplier, shift) are
+copied from flash into SDRAM at boot and streamed in while each layer runs.
 
-- **Output-stationary 8x8 array** with only a row skew. Each PE copies its finished sum into
-  a shadow register as the job's last value goes by, so the next job can start right away
-  while the drain requantizes the previous one.
-- **Depthwise without a line buffer.** In depthwise mode the array runs row-staggered and
-  each PE row uses exactly the word that's arriving from activation memory, one tap per read.
-  A line buffer didn't fit.
-- **TFLite-exact requantization.** TFLite rounds twice for convolutions and once for fully
-  connected layers; both variants share one datapath and the instruction picks which.
-- **Fitting in 20K LUTs** was the hardest part. No multipliers in address math (counters and
-  shift-add instead), LUT RAM for the transposer and parameter store. The non-obvious one:
-  on Gowin a flip-flop can only take its input from the LUT in its own slice, so every
-  register fed by another register costs a pass-through LUT that the utilisation report
-  doesn't show. At one point the real demand was 21.4k of 20.7k LUT positions and the placer
-  just spun, while the report looked fine. [docs/notes.md](docs/notes.md) has the whole story.
+- **Tile engine.** For a CONV it gathers the input windows from activation memory (im2col)
+  and passes them through a transposer into the array, one job at a time. A job is 8 output
+  pixels × 8 output channels. In the first layer a pixel's RGB bytes are packed into one
+  word, so the 3-channel input still keeps the array busy.
+- **MAC array.** 8x8 and output-stationary: each PE accumulates one output value, and the
+  inputs enter with a row skew. When the last product of a job comes through, every PE
+  copies its sum into a shadow register and starts on the next job, while the drain reads
+  the shadow registers out.
+- **Depthwise mode.** For DWCONV a job is 8 neighbouring output pixels of one row × 8
+  channels. The array keeps its row skew, so each PE row uses exactly the word arriving from
+  activation memory, and every tap is issued together with the read of its word. That way
+  depthwise layers need no line buffer.
+- **Requantization.** Two requant pipelines turn the sums back into int8 the same way
+  TFLite does: double rounding for convolutions, single rounding for fully connected layers,
+  picked per instruction. The results go back into activation memory for the next layer.
+- **Area.** Address math uses counters and shift-add instead of multipliers, and the
+  transposer and parameter store are in LUT RAM. On Gowin a flip-flop can only take its
+  input from the LUT in its own slice, so a register fed by another register costs an extra
+  pass-through LUT. I avoid register copies wherever I can for that reason.
+  [docs/notes.md](docs/notes.md) has the details.
 
 ## The compiler and simulator
 
@@ -96,8 +103,8 @@ cd sw && python -m npu.compiler ../models/ir/vww --out ../build/npu_vww
 | Utilisation | LUT4 77%, DFF 55%, BSRAM 45/46, 64 DSP multipliers |
 | Fmax after routing | 64.4 MHz NPU clock (runs at 54 MHz), 83.5 MHz HDMI clock (runs at 25.2 MHz) |
 
-VWW started at 705k cycles. How it got to 243k (and what I tried that didn't fit) is in
-[docs/notes.md](docs/notes.md).
+The first version that ran VWW took 705k cycles. [docs/notes.md](docs/notes.md) lists each
+optimization step from there to 243k, plus the ones I left out.
 
 ## Running it on the board
 
