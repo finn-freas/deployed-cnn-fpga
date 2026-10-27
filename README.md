@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/finn-freas/deployed-cnn-fpga/actions/workflows/ci.yml/badge.svg)](https://github.com/finn-freas/deployed-cnn-fpga/actions/workflows/ci.yml)
 
-This is a neural network accelerator (NPU) I designed, running a person detector on a $25
+This is a neural network accelerator (NPU) I designed, running a person detector on a $50
 FPGA board (Sipeed Tang Nano 20K, Gowin GW2AR-18). It's my first big Verilog project, and
 most of what I know about hardware design I learned while building it.
 
