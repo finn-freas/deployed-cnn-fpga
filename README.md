@@ -21,30 +21,7 @@ SDRAM. I'm testing it on the real board now ([docs/bringup.md](docs/bringup.md))
 
 ## How it fits together
 
-```mermaid
-flowchart LR
-    subgraph host["Host (Python)"]
-        tfl["model.tflite"] --> ir[("IR")]
-        ir --> comp["compiler"]
-        comp --> sim["cycle-exact<br/>simulator"]
-        comp --> img["program + weights<br/>flash image"]
-    end
-    subgraph fpga["Tang Nano 20K (GW2AR-18)"]
-        flash[("SPI flash")] -->|boot| sys["npu_system<br/>boot · UART · SDRAM ctrl"]
-        sys <--> sdram[("SDRAM<br/>weights")]
-        sys --> core
-        subgraph core["npu_core"]
-            seq["sequencer"] --> te["tile engine<br/>im2col · transposer"]
-            te --> arr["8×8 MAC array<br/>+ depthwise mode"]
-            arr --> rq["2× requant<br/>TFLite rounding"]
-            rq --> act[("activation<br/>memory 56 KiB")]
-            act --> te
-        end
-        core --> hdmi["HDMI overlay<br/>thumbnail · verdict · latency"]
-    end
-    img --> flash
-    cam["webcam<br/>sw/board/demo.py"] -->|UART| sys
-```
+![Block diagram: the compiler on the PC writes the model to flash; on the board the weights are copied into SDRAM, and each layer loops from activation memory through the tile engine, MAC array and requantizers back into activation memory](docs/architecture.svg)
 
 ## How the NPU works
 
