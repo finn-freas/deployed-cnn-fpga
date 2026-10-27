@@ -132,3 +132,13 @@ def test_load_image_reshapes_npy(tmp_path):
     np.save(f, np.arange(12).reshape(2, 6))
     out = load_image(f, 2, 2, 3)
     assert out.shape == (2, 2, 3) and out.dtype == np.uint8 and out[1, 1, 2] == 11
+
+
+def test_font_rom_is_in_sync_with_generator():
+    from gen_font import GLYPHS, render
+
+    rom = Path(__file__).resolve().parents[2] / "rtl" / "board" / "font_rom.sv"
+    assert rom.read_text() == render(), "run python sw/board/gen_font.py"
+    for c, rows in GLYPHS.items():
+        assert len(rows) == 7 and all(len(r) == 5 and set(r) <= {"#", "."} for r in rows), c
+    assert all(ord(c) < 128 for c in GLYPHS)
