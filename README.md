@@ -6,9 +6,9 @@
 ![Precision](https://img.shields.io/badge/inference-INT8-orange)
 [![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
-**A custom INT8 neural-network accelerator, its compiler, and a person detector running on a
-$25 FPGA board.** The NPU runs the MLPerf Tiny **Visual Wake Words** model on a Sipeed Tang
-Nano 20K, **bit-exact with TensorFlow Lite**, in about **4.75 ms per image**. Everything is built with
+*A custom INT8 neural-network accelerator and a person detector running on a
+$25 FPGA board. The NPU runs the MLPerf Tiny Visual Wake Words model on a Sipeed Tang
+Nano 20K, bit-exact with TensorFlow Lite. Everything is built with
 open-source tools: Yosys, nextpnr, Verilator and cocotb. Quantized ONNX models are compiled
 for it by [**npuc**](https://github.com/finn-freas/npuc), a separate repository.
 
