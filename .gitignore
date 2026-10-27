@@ -15,3 +15,6 @@ build/
 *.fs
 *.json.pnr
 fpga/tangnano20k/build_*.log
+
+# Local planning notes
+.gateflow/
