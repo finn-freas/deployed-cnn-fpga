@@ -6,9 +6,7 @@ My own INT8 neural network accelerator, running a person detector on a $25 FPGA 
 (Sipeed Tang Nano 20K, Gowin GW2AR-18).
 
 The model is the MLPerf Tiny Visual Wake Words reference (MobileNetV1 0.25, 96x96 RGB in,
-"person" / "no person" out). The NPU's output matches TensorFlow Lite's int8 reference
-kernels bit for bit, on every layer, not just the final class. Everything is built with the
-open-source flow (Yosys, nextpnr, Verilator, cocotb), no vendor IDE.
+"person" / "no person" out). Everything is built with the open-source flow (Yosys, nextpnr, Verilator, cocotb), no vendor IDE.
 
 - VWW takes 243,602 cycles with ideal memory and 256,642 with the weights in the board's
   SDRAM, so **4.75 ms per image at 54 MHz**
@@ -104,11 +102,11 @@ cd sw && python -m npu.compiler ../models/ir/vww --out ../build/npu_vww
 | Fmax after routing | 64.4 MHz NPU clock (runs at 54 MHz), 83.5 MHz HDMI clock (runs at 25.2 MHz) |
 
 The first version that ran VWW took 705k cycles. [docs/notes.md](docs/notes.md) lists each
-optimization step from there to 243k, plus the ones I left out.
+optimization step.
 
 ## Running it on the board
 
-For the first time, go through the [bring-up checklist](docs/bringup.md). There's a small
+For the first time, go through the [bring-up checklist](docs/bringup.md). There's a
 test bitstream plus `sw/board/board_check.py` that check the UART, SDRAM and flash one at a
 time before the NPU goes on.
 
@@ -121,7 +119,7 @@ python sw/board/demo.py --port COM5                           # webcam -> board 
 
 At power-up the board copies the weights from flash into SDRAM and classifies the demo
 image. After that, any image sent over the UART (1 Mbaud) gets classified. The HDMI output
-shows the image, the verdict, the score and the latency. S1 resets, S2 reruns the demo image.
+shows the image, the verdict, the score, and  latency.
 
 ## Building and testing
 
@@ -133,7 +131,7 @@ make test-rtl            # cocotb + Verilator (needs OSS CAD Suite in ~/oss-cad-
 
 The RTL tests compare against TFLite's tensors layer by layer and against the simulator's
 cycle counts, run random networks (odd sizes, strides, padding), and simulate the whole board
-system with SPI flash and SDRAM models. CI runs all of it and builds the bitstreams.
+system with SPI flash and SDRAM models The CI runs all of it and builds the bitstreams.
 
 ## Layout
 
