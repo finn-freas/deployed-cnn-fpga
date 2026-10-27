@@ -3,7 +3,8 @@
 [![CI](https://github.com/finn-freas/deployed-cnn-fpga/actions/workflows/ci.yml/badge.svg)](https://github.com/finn-freas/deployed-cnn-fpga/actions/workflows/ci.yml)
 
 This is a neural network accelerator (NPU) I designed, running a person detector on a $25
-FPGA board (Sipeed Tang Nano 20K, Gowin GW2AR-18).
+FPGA board (Sipeed Tang Nano 20K, Gowin GW2AR-18). It's my first big Verilog project, and
+most of what I know about hardware design I learned while building it.
 
 The model is the MLPerf Tiny Visual Wake Words model. It's a small MobileNet that looks at a
 96x96 color image and says "person" or "no person". Everything is built with the
@@ -48,7 +49,8 @@ flowchart LR
 ## How the NPU works
 
 The model is quantized to 8-bit integers (int8), so all the math on the FPGA is integer math.
-No floating point is needed.
+That's a big reason this fits on a small FPGA at all, since floating point would take way
+more logic.
 
 The NPU runs the network one layer at a time, and each layer is one instruction. There are
 only four instructions:
@@ -76,18 +78,23 @@ input by a weight and adds the result to a running sum, so the 64 units together
 starts the next job right away, while the saved sums are read out.
 
 **Depthwise layers.** For DWCONV the same array is used a bit differently. A job is 8
-neighbouring pixels in one row × 8 channels, and each unit gets its input straight from
-memory as it's read, so no extra buffer is needed.
+neighbouring pixels in one row × 8 channels. My first idea was a line buffer that holds the
+input rows, but that took too much space. Instead each row of units takes its input straight
+from memory as it's read, which works because the inputs already arrive staggered by one
+cycle per row.
 
 **Back to int8.** After a layer, the sums are much bigger than 8 bits and need to be scaled
 back down to int8 for the next layer. TensorFlow Lite does this with a specific integer multiply and
 rounding, and I copied it exactly, so my results match TFLite bit for bit. Two of these
 "requantizer" units run in parallel.
 
-**Fitting it in.** The FPGA only has about 20K logic cells, so the design had to be small.
-I avoided multipliers anywhere except the actual math, and put small tables in
-LUT RAM. One thing specific to this FPGA: a register that's fed by another register costs an
-extra logic cell, so I tried to avoid copying signals into extra registers.
+**Fitting it in.** The FPGA only has about 20K LUTs, so the design had to be small, and
+this is where I learned the most. Address calculations use counters and shifts instead of
+multipliers, and small tables go in LUT RAM. The thing that confused me for a while is that
+on this FPGA a flip-flop can only take its input from the LUT right next to it, so a register
+fed by another register uses up an extra LUT. The utilization report doesn't show those, so
+the design was actually bigger than the report said and wouldn't place. Now I try not to add
+extra register copies.
 
 ## The compiler and simulator
 
@@ -99,8 +106,8 @@ need TensorFlow installed.
 laid out, where each feature map goes in memory, and which rounding each layer needs.
 
 `sw/npu/sim.py` is a simulator written in Python. It does the same integer math as the
-hardware and also predicts how many clock cycles each instruction takes, which I use to
-check the hardware.
+hardware and also predicts how many clock cycles each instruction takes. I wrote it before
+the Verilog, and the testbenches check the RTL against it, which caught a lot of my bugs.
 
 ```bash
 cd sw && python -m npu.compiler ../models/ir/vww --out ../build/npu_vww
