@@ -1,14 +1,3 @@
-"""Flash image for the board (rtl/board/npu_system.sv) and programming helper.
-
-    python -m npu.board build/vww --image demo.png --out build/board/flash.bin [--program]
-                                                                     (run from sw/)
-
-Layout in 64-bit words from FLASH_BASE (0x400000): the external-store image (weights and
-params) at word 0, then at BOOT_W a header, the external-store image's length, the
-program (two 32-bit instruction beats per word) and a demo image (packed uint8 HWC bytes). --program writes it with openFPGALoader
-next to the bitstream (which sits at the start of the same flash).
-"""
-
 import argparse
 import subprocess
 from pathlib import Path
@@ -23,9 +12,7 @@ FLASH_BASE = 0x40_0000
 BOOT_W = 0x1_0000
 MAGIC = 0b101101
 
-
 def boot_words(prog, image_u8: np.ndarray) -> list[int]:
-    """Header (2 words) + program + demo image, as uint64 words."""
     meta = prog.meta["input"]
     h, w, c = meta["h"], meta["w"], meta["c"]
     img = np.asarray(image_u8, np.uint8).reshape(h, w, c)
@@ -42,18 +29,13 @@ def boot_words(prog, image_u8: np.ndarray) -> list[int]:
     prog_words = [beat_list[i] | beat_list[i + 1] << 32 for i in range(0, len(beat_list), 2)]
     return [header, len(prog.ext_words())] + prog_words + np.frombuffer(buf.tobytes(), "<u8").tolist()
 
-
 def flash_words(prog, image_u8: np.ndarray) -> list[int]:
-    """The whole user-data region from FLASH_BASE, as uint64 words."""
     ext = prog.ext_words()
     assert len(ext) <= BOOT_W, "external store image overlaps the boot block"
     return ext + [0] * (BOOT_W - len(ext)) + boot_words(prog, image_u8)
 
-
 def image_sum(words) -> int:
-    """The bring-up flash check (rtl/board/bringup.sv): sum of every 32-bit half, mod 2^32."""
     return sum((int(w) & 0xFFFFFFFF) + (int(w) >> 32) for w in words) & 0xFFFFFFFF
-
 
 def load_image(path: Path, h: int, w: int, c: int) -> np.ndarray:
     if path.suffix == ".npy":
@@ -61,7 +43,6 @@ def load_image(path: Path, h: int, w: int, c: int) -> np.ndarray:
     from PIL import Image
     im = Image.open(path).convert("RGB" if c == 3 else "L").resize((w, h))
     return np.asarray(im, np.uint8).reshape(h, w, c)
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -92,10 +73,8 @@ def main():
           f"{len(prog.instrs)} instructions) for flash offset {FLASH_BASE:#x}; "
           f"bring-up flash check: header {words[BOOT_W]:016x}, sum {image_sum(prog.ext_words()):08x}")
     if args.program:
-        # --external-flash writes the raw image at the offset (the bitstream at 0 is untouched)
         subprocess.run(["openFPGALoader", "-b", "tangnano20k", "--external-flash", "--verify", "-o",
                         str(FLASH_BASE), str(args.out)], check=True)
-
 
 if __name__ == "__main__":
     main()

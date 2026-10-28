@@ -1,13 +1,3 @@
-"""Train the Stage 2 MNIST CNN and export a fully-INT8 TFLite model.
-
-Run with the TensorFlow environment:
-    .venv-tf/bin/python sw/model/train_mnist.py --out models/mnist_int8.tflite
-
-Architecture (matches the NPU program in the design plan):
-    28x28x1 -> conv3x3(8)+ReLU -> maxpool2 -> conv3x3(16)+ReLU -> maxpool2 -> dense(10)
-Output is int8 logits (no softmax); the NPU takes the argmax.
-"""
-
 import argparse
 import os
 from pathlib import Path
@@ -17,7 +7,6 @@ import numpy as np
 import tensorflow as tf
 
 SEED = 0
-
 
 def build_model() -> tf.keras.Model:
     inp = tf.keras.Input((28, 28, 1), name="image")
@@ -29,23 +18,18 @@ def build_model() -> tf.keras.Model:
     out = tf.keras.layers.Dense(10, name="fc")(x)
     return tf.keras.Model(inp, out, name="mnist_npu")
 
-
 def augmenter() -> tf.keras.Sequential:
-    """Geometric + photometric jitter so the model tolerates a hand-held camera view."""
     return tf.keras.Sequential([
         tf.keras.layers.RandomTranslation(0.12, 0.12, fill_mode="constant", seed=SEED),
-        tf.keras.layers.RandomRotation(0.04, fill_mode="constant", seed=SEED),   # about ±14°
+        tf.keras.layers.RandomRotation(0.04, fill_mode="constant", seed=SEED),
         tf.keras.layers.RandomZoom((-0.2, 0.15), fill_mode="constant", seed=SEED),
     ])
 
-
 def stroke_and_noise(x):
-    # Randomly thicken strokes (camera blur/marker pens) and add sensor-like noise.
     thick = tf.nn.max_pool2d(x, 2, 1, "SAME")
     x = tf.where(tf.random.uniform([tf.shape(x)[0], 1, 1, 1]) < 0.3, thick, x)
     x = x + tf.random.normal(tf.shape(x), stddev=0.04)
     return tf.clip_by_value(x, 0.0, 1.0)
-
 
 def datasets(batch: int):
     (x, y), (xt, yt) = tf.keras.datasets.mnist.load_data()
@@ -60,7 +44,6 @@ def datasets(batch: int):
     test = tf.data.Dataset.from_tensor_slices((xt, yt)).batch(512)
     return train, test, x, xt, yt
 
-
 def to_int8_tflite(model, calib: np.ndarray) -> bytes:
     def rep():
         for i in range(0, 1000, 10):
@@ -73,7 +56,6 @@ def to_int8_tflite(model, calib: np.ndarray) -> bytes:
     conv.inference_input_type = tf.int8
     conv.inference_output_type = tf.int8
     return conv.convert()
-
 
 def int8_accuracy(tflite: bytes, xt: np.ndarray, yt: np.ndarray) -> float:
     itp = tf.lite.Interpreter(
@@ -89,7 +71,6 @@ def int8_accuracy(tflite: bytes, xt: np.ndarray, yt: np.ndarray) -> float:
         itp.invoke()
         correct += int(np.argmax(itp.get_tensor(o_det["index"])[0]) == label)
     return correct / len(yt)
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -118,7 +99,6 @@ def main():
     print(f"float accuracy: {float_acc:.4f}")
     print(f"int8  accuracy: {q_acc:.4f}  (TFLite reference kernels)")
     print(f"params: {model.count_params()}  tflite: {len(tflite)} bytes -> {out}")
-
 
 if __name__ == "__main__":
     main()

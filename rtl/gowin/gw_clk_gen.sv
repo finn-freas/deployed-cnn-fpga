@@ -1,8 +1,3 @@
-// gw_clk_gen: Gowin GW2A clocking for 640x480 DVI.
-//   clk_27  -> rPLL -> clk_tmds = 27 * 14 / 3 = 126 MHz (5x pixel, OSER10 FCLK)
-//   clk_tmds -> CLKDIV /5 -> clk_pix = 25.2 MHz
-// Vendor primitives: synthesis only (not simulated).
-
 `default_nettype none
 
 module gw_clk_gen (
@@ -15,11 +10,11 @@ module gw_clk_gen (
     rPLL #(
         .FCLKIN          ("27"),
         .DYN_IDIV_SEL    ("false"),
-        .IDIV_SEL        (2),        // /3
+        .IDIV_SEL        (2),
         .DYN_FBDIV_SEL   ("false"),
-        .FBDIV_SEL       (13),       // x14
+        .FBDIV_SEL       (13),
         .DYN_ODIV_SEL    ("false"),
-        .ODIV_SEL        (4),        // VCO = 504 MHz
+        .ODIV_SEL        (4),
         .PSDA_SEL        ("0000"),
         .DYN_DA_EN       ("true"),
         .DUTYDA_SEL      ("1000"),

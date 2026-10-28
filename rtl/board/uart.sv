@@ -1,5 +1,3 @@
-// uart_rx / uart_tx: 8N1 UART, DIV = clk / baud (>= 4).
-
 `default_nettype none
 
 module uart_rx #(
@@ -8,7 +6,7 @@ module uart_rx #(
     input  wire logic       clk,
     input  wire logic       rst,
     input  wire logic       rx,
-    output      logic       valid,      // one-cycle pulse with `data`
+    output      logic       valid,
     output      logic [7:0] data
 );
     localparam int CW = $clog2(DIV * 3 / 2 + 1);
@@ -24,7 +22,7 @@ module uart_rx #(
             busy <= 1'b0;
             sync <= 2'b11;
         end else if (!busy) begin
-            if (!sync[1]) begin                 // start bit: sample bit 0 1.5 bits later
+            if (!sync[1]) begin
                 busy <= 1'b1;
                 cnt  <= CW'(DIV * 3 / 2 - 1);
                 bitn <= '0;
@@ -33,7 +31,7 @@ module uart_rx #(
             cnt <= cnt - 1'b1;
         end else begin
             cnt <= CW'(DIV - 1);
-            if (bitn == 4'd8) begin             // stop bit
+            if (bitn == 4'd8) begin
                 busy  <= 1'b0;
                 valid <= sync[1];
             end else begin
@@ -49,13 +47,13 @@ module uart_tx #(
 ) (
     input  wire logic       clk,
     input  wire logic       rst,
-    input  wire logic       valid,      // accepted when ready
+    input  wire logic       valid,
     input  wire logic [7:0] data,
     output      logic       ready,
     output      logic       tx
 );
     localparam int CW = $clog2(DIV);
-    logic [8:0]    sh;                  // {data, start}, LSB first; stop is the idle level
+    logic [8:0]    sh;
     logic [3:0]    bitn;
     logic [CW-1:0] cnt;
 
@@ -74,8 +72,6 @@ module uart_tx #(
         end else if (cnt != 0) begin
             cnt <= cnt - 1'b1;
         end else begin
-            // start, 8 data bits, stop (sh has shifted in ones by then), then hold the stop
-            // level one more bit time before the next start
             cnt  <= CW'(DIV - 1);
             if (bitn != 4'd1) begin
                 tx <= sh[0];

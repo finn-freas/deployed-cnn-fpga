@@ -1,18 +1,6 @@
-"""Random small int8 networks in the exported-IR format, for corner-case tests.
-
-random_ir(seed) builds a chain that starts with a packed-input CONV and mixes CONV,
-DWCONV (k 1..3, stride 1/2, valid or same padding), MAXPOOL (possibly padded) and 3x3
-AVGPOOL with odd widths, then reduces to 1x1 and ends with an FC (single-rounding CONV). Weights, biases and scales
-are random, with output scales set so values mostly land inside int8 rather than all
-saturating. The NPU simulator is the reference for such programs (it is checked against
-TFLite on the real models); the RTL test compares the two layer by layer.
-"""
-
 import math
 
 import numpy as np
-
-
 
 def _out_and_pad(size, k, stride, same):
     if same:
@@ -23,7 +11,6 @@ def _out_and_pad(size, k, stride, same):
         pad = 0
     return out, pad
 
-
 def random_ir(seed: int, max_hw: int = 20):
     rng = np.random.default_rng(seed)
     H = W = int(rng.integers(6, max_hw + 1))
@@ -33,7 +20,6 @@ def random_ir(seed: int, max_hw: int = 20):
     cur = {"shape": [H, W, C], "scale": 1 / 255, "zp": -128}
 
     def new_q(k_eff):
-        # output scale ~ |acc| spread so requantized values use the int8 range
         return float(cur["scale"] * 0.02 * math.sqrt(k_eff) * 60 * rng.uniform(0.5, 2.0))
 
     def add_conv(name, k, stride, same, oc, fc=False):
@@ -77,7 +63,6 @@ def random_ir(seed: int, max_hw: int = 20):
                        "out_zp": cur["zp"], "k": k, "stride": stride, "pad": ph, "act": "none"})
         cur.update(shape=[oh, ow, c])
 
-    # packed first conv
     add_conv("c0", int(rng.choice([1, 3])), int(rng.choice([1, 2])), bool(rng.integers(2)),
              int(rng.integers(4, 17)))
     n_mid = int(rng.integers(3, 7))
@@ -91,11 +76,10 @@ def random_ir(seed: int, max_hw: int = 20):
             k = int(rng.choice([1, 3])) if h >= 3 else 1
             add_conv(f"c{i + 1}", k, 1, True, int(rng.integers(4, 41)))
         elif h >= 4:
-            if rng.integers(2):     # max pool, possibly padded
+            if rng.integers(2):
                 add_pool(f"p{i}", "maxpool", int(rng.choice([2, 3])), 2, bool(rng.integers(2)))
-            else:                   # average pool: lowered to DWCONV (3x3, valid)
+            else:
                 add_pool(f"p{i}", "avgpool", 3, int(rng.choice([1, 2])), False)
-    # reduce to 1x1, then a classifier (a global average pool must be 3x3 to be lowered)
     while cur["shape"][0] > 3 or cur["shape"][0] == 2:
         add_dw(f"r{len(layers)}", 3, 2, True)
     if cur["shape"][0] == 3:
@@ -106,12 +90,10 @@ def random_ir(seed: int, max_hw: int = 20):
           "output": {"tensor": 1, "softmax_dropped": True}, "layers": layers}
     return ir, arrays
 
-
 def random_image(ir, seed: int):
     return np.random.default_rng(seed).integers(0, 256, ir["input"]["shape"]).astype(np.uint8)
 
-
-if __name__ == "__main__":   # print a few nets
+if __name__ == "__main__":
     for s in range(3):
         ir, _ = random_ir(s)
         print(f"seed {s}: input {ir['input']['shape']}")

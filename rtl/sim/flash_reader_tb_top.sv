@@ -1,5 +1,3 @@
-// flash_reader_tb_top: spi_flash_reader + spi_flash_model, for unit testing (simulation).
-
 `default_nettype none
 
 module flash_reader_tb_top #(

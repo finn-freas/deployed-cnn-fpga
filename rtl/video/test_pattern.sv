@@ -1,6 +1,3 @@
-// test_pattern: 8 vertical SMPTE-style color bars with a bouncing white square.
-// Combinational in (x, y); the square position updates once per frame.
-
 `default_nettype none
 
 module test_pattern (
@@ -18,7 +15,7 @@ module test_pattern (
 
     logic [10:0] sq_x;
     logic [9:0]  sq_y;
-    logic        dir_x, dir_y;   // 1 = increasing
+    logic        dir_x, dir_y;
 
     always_ff @(posedge clk) begin
         if (rst) begin
@@ -35,11 +32,10 @@ module test_pattern (
     end
 
     logic in_sq;
-    logic [2:0] bar;   // {r, g, b} on/off per bar, 80 px wide
+    logic [2:0] bar;
 
     always_comb begin
         in_sq = (x >= sq_x) && (x < sq_x + 11'(SQ)) && (y >= sq_y) && (y < sq_y + 10'(SQ));
-        // white, yellow, cyan, green, magenta, red, blue, black
         unique case (x[9:0] / 10'd80)
             10'd0:   bar = 3'b111;
             10'd1:   bar = 3'b110;

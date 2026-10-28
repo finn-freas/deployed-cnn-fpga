@@ -1,10 +1,3 @@
-// npu_sim_top: NPU core + external store back-end, for simulation.
-// Host port: sel 0 = instruction memory, 2 = activation memory, 3 = external store.
-//
-// EXT_FLASH = 0: ext_mem_model (configurable latency/bandwidth, e.g. SDRAM-like).
-// EXT_FLASH = 1: the real spi_flash_reader talking to a behavioural SPI flash, i.e. the
-//                board's weight path.
-
 `default_nettype none
 
 module npu_sim_top
@@ -30,7 +23,7 @@ module npu_sim_top
     input  wire logic                host_we,
     input  wire logic [2:0]          host_sel,
     input  wire logic [15:0]         host_addr,
-    input  wire logic [WORD_W-1:0]   host_wdata,    // 64-bit: act/ext words, 32-bit instruction beats
+    input  wire logic [WORD_W-1:0]   host_wdata,
     input  wire logic [ACT_AW-1:0]   dbg_addr,
     output      logic [WORD_W-1:0]   dbg_rdata
 );

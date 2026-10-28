@@ -1,15 +1,3 @@
-// npu_board_top: the person detector on the Tang Nano 20K.
-//
-//   * boots from the SPI flash: copies the weights/params into the in-package SDRAM, loads
-//     the program and a demo image, and runs one inference
-//   * S1 resets; S2 reloads the demo image and runs again
-//   * USB-UART (1 Mbaud): send images, get class/score/cycles back (sw/board/demo.py)
-//   * clocks: NPU/SDRAM/flash/UART at 54 MHz, HDMI at 25.2 MHz
-//   * HDMI 640x480: thumbnail of the input, verdict, score, latency, run count
-//   * LEDs (active-low): 0 person, 1 no person, 2 busy, 3 booted, 4 flash error, 5 heartbeat
-//
-// Needs gowin_pack --mspi_as_gpio so the configuration flash pins stay usable as I/O.
-
 `default_nettype none
 
 module npu_board_top (
@@ -27,7 +15,6 @@ module npu_board_top (
     output      logic       tmds_clk_n,
     output      logic [2:0] tmds_d_p,
     output      logic [2:0] tmds_d_n,
-    // in-package SDRAM
     output      logic        O_sdram_clk,
     output      logic        O_sdram_cke,
     output      logic        O_sdram_cs_n,
@@ -39,16 +26,14 @@ module npu_board_top (
     output      logic [1:0]  O_sdram_ba,
     inout  wire logic [31:0] IO_sdram_dq
 );
-    localparam int CLK_HZ = 54_000_000;     // NPU, SDRAM, flash, UART (gw_pll_sys)
+    localparam int CLK_HZ = 54_000_000;
 
-    // clocks: clk (54 MHz) for the system, clk_pix (25.2 MHz) and clk_tmds for HDMI
     logic clk, clk_pix, clk_tmds, lock_s, lock_p, rst, rst_pix;
     gw_pll_sys u_pll (.clk_27, .clk_sys(clk), .locked(lock_s));
     gw_clk_gen u_clk (.clk_27, .clk_tmds, .clk_pix, .locked(lock_p));
     reset_sync u_rst (.clk, .rst_async_in(!lock_s || btn_s1), .rst_out(rst));
     reset_sync u_rstp (.clk(clk_pix), .rst_async_in(!lock_p || btn_s1), .rst_out(rst_pix));
 
-    // S2: synchronise, debounce (~5 ms), one pulse per press
     logic [1:0]  s2_sync;
     logic [17:0] s2_cnt;
     logic        s2_state, run;
@@ -68,7 +53,6 @@ module npu_board_top (
         end
     end
 
-    // ---- system (clk)
     logic        booted, boot_err, busy, res_valid;
     logic [7:0]  res_class;
     logic signed [7:0] res_score;
@@ -91,7 +75,6 @@ module npu_board_top (
         .sd_cas_n(O_sdram_cas_n), .sd_we_n(O_sdram_wen_n), .sd_ba(O_sdram_ba),
         .sd_addr(O_sdram_addr), .sd_dqm(O_sdram_dqm), .sd_dq_o, .sd_dq_oe, .sd_dq_i(IO_sdram_dq));
 
-    // ---- display (clk_pix)
     logic        p_booted, p_boot_err, p_busy, p_res_valid;
     logic [7:0]  p_res_class, p_res_score;
     logic [31:0] p_res_cycles;

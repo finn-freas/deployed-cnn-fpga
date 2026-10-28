@@ -1,11 +1,3 @@
-// npu_pool: MAXPOOL on channel-blocked activations (8 lanes per word).
-//
-// For each output pixel and channel block: read the k x k window (one word per cycle,
-// out-of-bounds taps skipped), take the per-lane max, clamp to [act_min, act_max] and write.
-// (AVGPOOL is lowered by the compiler to a ones-weight DWCONV.)
-// Addresses are incremental; the input row stride in_w * in_cb is formed by shift-and-add
-// at the start of the instruction (S_MUL).
-
 `default_nettype none
 
 module npu_pool
@@ -15,7 +7,7 @@ module npu_pool
     input  wire logic              rst,
     input  wire logic              start,
     /* verilator lint_off UNUSEDSIGNAL */
-    input  wire instr_t            ins,           // held by the sequencer while the unit runs
+    input  wire instr_t            ins,
     /* verilator lint_on UNUSEDSIGNAL */
     output      logic              done,
     output      logic [ACT_AW-1:0] act_raddr,
@@ -31,16 +23,14 @@ module npu_pool
     logic [6:0]  oy, ox;
     logic [5:0]  cb;
     logic [2:0]  ky, kx;
-    logic [12:0] RS;                // in_w * in_cb
-    logic [12:0] m_a;               // shift-and-add operands
+    logic [12:0] RS;
+    logic [12:0] m_a;
     logic [5:0]  m_b;
     logic [2:0]  m_cnt;
 
-    // window corner of the current output pixel: wy = oy*stride - pad (wx likewise) and its
-    // word address (in_base + (wy*in_w + wx)*in_cb, possibly out of range); row start too
     logic signed [9:0]  wy, wx, iy, ix;
     logic signed [19:0] c_addr, r_addr, t_addr, t_row;
-    logic [ACT_AW-1:0]  w_addr;     // output word: out_base + p*in_cb + cb
+    logic [ACT_AW-1:0]  w_addr;
     logic              inb;
     always_comb begin
         iy  = wy + 10'(ky);
@@ -72,7 +62,6 @@ module npu_pool
         done    <= 1'b0;
         d_valid <= 1'b0;
 
-        // reduce the word that arrived from the previous cycle's read
         if (d_valid && d_inb) begin
             for (int l = 0; l < N; l++) begin
                 logic signed [7:0] x;
@@ -97,7 +86,6 @@ module npu_pool
                     state <= S_MUL;
                 end
 
-                // RS = in_cb * in_w (6 steps), then the first pixel's corner
                 S_MUL: begin
                     m_cnt <= m_cnt + 3'd1;
                     if (m_cnt != 3'd6) begin
@@ -134,10 +122,8 @@ module npu_pool
                     end
                 end
 
-                // the last word is reduced this cycle
                 S_TAIL: state <= S_WRITE;
 
-                // write this block's result and move on: next block, or next pixel
                 S_WRITE: begin
                     logic signed [19:0] c;
                     logic [5:0] nb;
@@ -167,7 +153,6 @@ module npu_pool
                     end else begin
                         cb <= cb + 6'd1;
                     end
-                    // the next taps start at the corner of the (new) pixel, plus the block
                     t_addr <= c + 20'(nb);
                     t_row  <= c + 20'(nb);
                 end

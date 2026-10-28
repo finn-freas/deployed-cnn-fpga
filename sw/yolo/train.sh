@@ -1,9 +1,4 @@
 #!/bin/bash
-# Train YOLOv5n-ReLU at 320x320 on the trash dataset (run from the repo root).
-#   sw/yolo/train.sh <path/to/data.yaml> [epochs]
-# Hyperparameters follow the author's original YOLOv5s run (Trash_Detection/Hyp.yaml).
-# Initialized from COCO-pretrained yolov5n.pt: layer shapes match exactly and only the
-# activation differs (SiLU -> ReLU), so fine-tuning converges far faster than scratch.
 set -euo pipefail
 
 DATA=$(realpath "$1")

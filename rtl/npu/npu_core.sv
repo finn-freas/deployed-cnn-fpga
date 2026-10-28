@@ -1,46 +1,32 @@
-// npu_core: instruction sequencer, on-chip memories, execution units, host/debug access.
-//
-// On chip: instruction memory and activation memory (which also holds the packed input
-// image). Weights and params live in an external store (flash/SDRAM) reached through a
-// burst-read port; the tile engine buffers what it needs.
-//
-// Host port: writes instruction or activation memory while the core is idle or paused.
-// Debug port: reads activation memory while idle or paused. With step_mode set, the core
-// pauses after every instruction until `resume`, so a testbench can check each layer.
-
 `default_nettype none
 
 module npu_core
     import npu_pkg::*;
 #(
-    parameter int ACT_MEM  = ACT_DEPTH, // physical activation words (probes may shrink it)
-    parameter bit HAS_POOL = 1'b1       // 0: no MAXPOOL unit (the instruction then does nothing)
+    parameter int ACT_MEM  = ACT_DEPTH,
+    parameter bit HAS_POOL = 1'b1
 ) (
     input  wire logic                clk,
     input  wire logic                rst,
-    // control
     input  wire logic                start,
     input  wire logic                step_mode,
     input  wire logic                resume,
-    output      logic                busy,          // running (not idle, not paused)
+    output      logic                busy,
     output      logic                paused,
-    output      logic                done,          // one-cycle pulse after END
+    output      logic                done,
     output      logic [IMEM_AW-1:0]  pc,
     output      logic [7:0]          result_class,
     output      logic signed [7:0]   result_score,
-    output      logic [31:0]         cycles,        // cycles since start (excluding pauses)
-    output      logic [31:0]         instr_cycles,  // cycles taken by the last instruction
-    // host write port
+    output      logic [31:0]         cycles,
+    output      logic [31:0]         instr_cycles,
     input  wire logic                host_we,
-    input  wire logic [2:0]          host_sel,      // 0 imem, 2 act (others: not in the core)
+    input  wire logic [2:0]          host_sel,
     /* verilator lint_off UNUSEDSIGNAL */
-    input  wire logic [15:0]         host_addr,     // 16 bits for the external store; core uses fewer
+    input  wire logic [15:0]         host_addr,
     /* verilator lint_on UNUSEDSIGNAL */
-    input  wire logic [WORD_W-1:0]   host_wdata,    // 64-bit: act/ext words, 32-bit instruction beats
-    // debug read port (activation memory, 1-cycle latency)
+    input  wire logic [WORD_W-1:0]   host_wdata,
     input  wire logic [ACT_AW-1:0]   dbg_addr,
     output      logic [WORD_W-1:0]   dbg_rdata,
-    // external store (weights + params): burst reads
     output      logic                ext_req,
     output      logic [EXT_AW-1:0]   ext_addr,
     output      logic [15:0]         ext_len,
@@ -55,25 +41,21 @@ module npu_core
     typedef enum logic [1:0] {U_NONE, U_TILE, U_POOL, U_ARGMAX} unit_e;
     qstate_e qs;
     unit_e   unit;
-    instr_t  ins;                        // the fetched instruction (stable until the next fetch)
+    instr_t  ins;
     logic    host_ok;
 
     assign host_ok = (qs == Q_IDLE) || (qs == Q_PAUSE);
     assign busy    = !host_ok;
     assign paused  = (qs == Q_PAUSE);
 
-    // ---------------------------------------------------------------- memories
-    // Instruction memory stores each INSTR_W-bit instruction as IMEM_BEATS 32-bit words
-    // (word pc*IMEM_BEATS + b holds bits 32b+31:32b), so it fits one block RAM instead of
-    // INSTR_W/36 side by side; fetch reads the beats one per cycle.
     localparam int IMEM_BEATS = INSTR_W / 32;
     localparam int IB_AW      = $clog2(IMEM_DEPTH * IMEM_BEATS);
     logic [31:0]        imem_rdata32;
     logic [IB_AW-1:0]   imem_raddr;
-    logic [INSTR_W-1:0] imem_rdata;      // assembled instruction
+    logic [INSTR_W-1:0] imem_rdata;
     assign ins = instr_t'(imem_rdata);
-    logic [3:0]         fb;              // fetch beat
-    logic [IB_AW-1:0]   ib_base;         // pc * IMEM_BEATS
+    logic [3:0]         fb;
+    logic [IB_AW-1:0]   ib_base;
     sdpram #(.W(32), .D(IMEM_DEPTH * IMEM_BEATS)) u_imem (
         .clk, .we(host_ok && host_we && host_sel == SEL_IMEM), .waddr(IB_AW'(host_addr)),
         .wdata(host_wdata[31:0]), .raddr(imem_raddr), .rdata(imem_rdata32));
@@ -88,7 +70,6 @@ module npu_core
         .raddr(ACT_PA'(act_raddr)), .rdata(act_rdata));
     assign dbg_rdata = act_rdata;
 
-    // ---------------------------------------------------------------- execution units
     logic tile_start, tile_done, pool_start, pool_done;
     logic [ACT_AW-1:0] t_act_raddr, t_act_waddr, p_act_raddr, p_act_waddr, a_act_raddr;
     logic [WORD_W-1:0] t_act_wdata, p_act_wdata;
@@ -113,8 +94,7 @@ module npu_core
         assign {p_act_raddr, p_act_waddr, p_act_wdata, p_act_we} = '0;
     end
 
-    // ARGMAX: one value per cycle, first maximum wins
-    logic [9:0]  am_i;            // value index being read
+    logic [9:0]  am_i;
     logic        am_run, am_dv, am_done;
     logic [9:0]  am_di;
     logic signed [7:0] am_best;
@@ -146,7 +126,6 @@ module npu_core
         end
     end
 
-    // ---------------------------------------------------------------- memory port muxing
     always_comb begin
         unique case (unit)
             U_TILE:   act_raddr = t_act_raddr;
@@ -169,7 +148,6 @@ module npu_core
         end
     end
 
-    // ---------------------------------------------------------------- sequencer
     logic [31:0] instr_start;
     logic        unit_done;
     assign unit_done = (unit == U_TILE && tile_done) || (unit == U_POOL && pool_done)
@@ -195,11 +173,10 @@ module npu_core
                     qs     <= Q_FETCH;
                 end
 
-                // beat b is addressed in cycle b and lands in cycle b+1
                 Q_FETCH: begin
                     if (fb != 0) imem_rdata[32 * 3'(fb - 4'd1) +: 32] <= imem_rdata32;
                     if (fb == 4'(IMEM_BEATS)) begin
-                        instr_start <= cycles;   // instr_cycles excludes the fetch beats
+                        instr_start <= cycles;
                         fb <= '0;
                         qs <= Q_DECODE;
                     end else begin
@@ -224,7 +201,7 @@ module npu_core
                             done <= 1'b1;
                             qs   <= Q_IDLE;
                         end
-                        default: unit <= U_NONE;   // NOP
+                        default: unit <= U_NONE;
                     endcase
                 end
 

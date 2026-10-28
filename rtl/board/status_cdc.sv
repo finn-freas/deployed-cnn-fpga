@@ -1,9 +1,3 @@
-// status_cdc: carries npu_system's status into the display's clock domain.
-// The result fields are written together once per inference, with res_count incremented,
-// so res_count[0] toggles per result; the destination copies the fields (by then long
-// stable, the next result is milliseconds away) when the synchronised toggle changes.
-// Single-bit flags go through two-flop synchronisers.
-
 `default_nettype none
 
 module status_cdc (
@@ -30,7 +24,7 @@ module status_cdc (
 );
     /* verilator lint_off UNUSEDSIGNAL */
     logic unused_src;
-    assign unused_src = s_clk ^ s_rst;  // no source-side logic
+    assign unused_src = s_clk ^ s_rst;
     /* verilator lint_on UNUSEDSIGNAL */
 
     logic [2:0] tog, f_bt, f_be, f_bz;

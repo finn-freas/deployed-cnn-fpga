@@ -1,6 +1,3 @@
-// sdpram_dc: simple dual-port RAM with separate write and read clocks (1-cycle read
-// latency). Infers block RAM.
-
 `default_nettype none
 
 module sdpram_dc #(

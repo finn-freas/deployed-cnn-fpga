@@ -1,17 +1,3 @@
-"""Build the MLPerf Tiny `vww01` accuracy set (1000 images: 500 person / 500 not).
-
-Two sources:
-  --official DIR   the extracted official `vw_coco2014_96` dataset (exact MLPerf images,
-                   already 96x96). Recommended for reported accuracy numbers.
-  (default)        rebuild from COCO val2017 originals downloaded image by image, resized
-                   to 96x96 with PIL bilinear. Silabs' resize method is undocumented, so
-                   pixels may differ slightly from the official set. Fine for bit-exact
-                   NPU-vs-TFLite checks; accuracy is then only approximately official.
-
-    python sw/model/make_vww01.py --out build/vww/vww01.npz [--official ~/datasets/vww/extracted]
-Writes an .npz with images (uint8 [1000, 96, 96, 3]), labels (1 = person), names, source.
-"""
-
 import argparse
 import csv
 import io
@@ -26,11 +12,9 @@ from PIL import Image
 LABELS = Path(__file__).resolve().parents[2] / "models" / "vww" / "y_labels.csv"
 COCO_URL = "http://images.cocodataset.org/val2017/{}.jpg"
 
-
 def read_labels():
     with open(LABELS) as f:
         return [(r[0].removesuffix(".bin"), int(r[2])) for r in csv.reader(f)]
-
 
 def fetch(image_id: str, cache: Path) -> bytes:
     path = cache / f"{image_id}.jpg"
@@ -46,7 +30,6 @@ def fetch(image_id: str, cache: Path) -> bytes:
             time.sleep(2 + 3 * attempt)
     raise RuntimeError(f"failed to download {image_id}")
 
-
 def from_coco(entries, cache: Path):
     cache.mkdir(parents=True, exist_ok=True)
     with ThreadPoolExecutor(16) as pool:
@@ -54,7 +37,6 @@ def from_coco(entries, cache: Path):
     imgs = [np.asarray(Image.open(io.BytesIO(b)).convert("RGB").resize((96, 96), Image.BILINEAR))
             for b in blobs]
     return np.stack(imgs).astype(np.uint8)
-
 
 def from_official(entries, root: Path):
     index = {p.stem.split("_")[-1]: p for p in root.rglob("*.jpg")}
@@ -65,7 +47,6 @@ def from_official(entries, root: Path):
             raise ValueError(f"{image_id}: expected 96x96, got {img.size}")
         imgs.append(np.asarray(img))
     return np.stack(imgs).astype(np.uint8)
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -84,7 +65,6 @@ def main():
     np.savez_compressed(args.out, images=images, labels=labels,
                         names=np.array([n for n, _ in entries]), source=source)
     print(f"{len(labels)} images ({labels.sum()} person) from {source} -> {args.out}")
-
 
 if __name__ == "__main__":
     main()

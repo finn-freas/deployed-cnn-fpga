@@ -1,4 +1,3 @@
-# Makes the `npu` package importable when running pytest from the repo root or sw/.
 import sys
 from pathlib import Path
 

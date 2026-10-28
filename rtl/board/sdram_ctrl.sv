@@ -1,19 +1,3 @@
-// sdram_ctrl: the GW2AR-18's in-package 64 Mbit SDR SDRAM (32-bit, 4 banks x 2K rows x
-// 256 columns) as a 64-bit word store with a streaming read port for the NPU.
-//
-// Reads use bursts of 8 (4 words) with auto-precharge; consecutive bursts go to
-// consecutive banks, so an ACTIVATE for the next burst issues while the current one
-// streams and a long read delivers one 64-bit word every 2 cycles. Writes are single
-// 64-bit words (two single-location WRITEs). Mapping of word w: burst b = w/4, bank b%4,
-// column {b/4 % 32, w%4, half}, row b/128.
-//
-// The read data latency (command to first beat at our clock edge) depends on the board's
-// clock and I/O delays, so it is measured after initialisation: a pattern is written and
-// read back, and the first of the candidate latencies that returns it is used. `cal_err`
-// reports that none did.
-//
-// Refresh: one AUTO REFRESH every REF_CYC cycles, between bursts.
-
 `default_nettype none
 
 module sdram_ctrl #(
@@ -22,24 +6,20 @@ module sdram_ctrl #(
 ) (
     input  wire logic        clk,
     input  wire logic        rst,
-    output      logic        ready,         // initialised and calibrated
+    output      logic        ready,
     output      logic        cal_err,
-    output      logic [1:0]  cal_rl,        // calibrated read latency - (CAS - 1)
-    output      logic        idle,          // no access in progress
-    // read stream (like the NPU's external-store port)
+    output      logic [1:0]  cal_rl,
+    output      logic        idle,
     input  wire logic        rd_req,
-    input  wire logic [16:0] rd_addr,       // 64-bit word address
+    input  wire logic [16:0] rd_addr,
     input  wire logic [15:0] rd_len,
     output      logic        rd_ack,
     output      logic        rvalid,
     output      logic [63:0] rdata,
-    // single-word writes: wr_data must stay stable from the request until `idle` returns
-    // (it is driven onto DQ after the row activation, a few cycles after wr_ack)
     input  wire logic        wr_req,
     input  wire logic [16:0] wr_addr,
     input  wire logic [63:0] wr_data,
     output      logic        wr_ack,
-    // SDRAM pins (dq split for simulation; the top level makes it bidirectional)
     output      logic        sd_cke,
     output      logic        sd_cs_n,
     output      logic        sd_ras_n,
@@ -53,7 +33,7 @@ module sdram_ctrl #(
     input  wire logic [31:0] sd_dq_i
 );
 
-    function automatic int cyc(input int ns);         // cycles covering ns
+    function automatic int cyc(input int ns);
         return (int'((64'(ns) * 64'(CLK_HZ) + 64'd999_999_999) / 64'd1_000_000_000));
     endfunction
     localparam int T_RP   = (cyc(15) < 1) ? 1 : cyc(15);
@@ -61,12 +41,10 @@ module sdram_ctrl #(
     localparam int T_RC   = cyc(60) + 1;
     localparam int T_WR   = 2;
     localparam int T_INIT = cyc(200_000);
-    localparam int REF_CYC = cyc(7_800);               // 8192 per 64 ms: twice the minimum
-    // read latency RL: beat i of a READ set in cycle t is in dq_q in cycle t+2+RL+i
-    localparam int RL_MIN = CAS - 1, RL_N = 4;         // candidate latencies
+    localparam int REF_CYC = cyc(7_800);
+    localparam int RL_MIN = CAS - 1, RL_N = 4;
     localparam int RL_MAX = RL_MIN + RL_N - 1;
 
-    // commands {ras_n, cas_n, we_n}
     localparam logic [2:0] C_NOP = 3'b111, C_ACT = 3'b011, C_RD = 3'b101, C_WR = 3'b100,
                            C_PRE = 3'b010, C_REF = 3'b001, C_MRS = 3'b000;
     logic [2:0] cmd;
@@ -79,27 +57,24 @@ module sdram_ctrl #(
         WR_LO, WR_HI, WAIT, REF
     } state_e;
     state_e st, after;
-    logic [15:0] wt;                        // wait counter
+    logic [15:0] wt;
     logic [3:0]  n_ref;
     logic [15:0] ref_cnt;
     logic        ref_due;
 
-    // ---- read stream state
-    logic [14:0] b_next;                    // next burst to issue
-    logic [15:0] bursts_left;               // bursts still to issue
-    logic [2:0]  ph;                        // position in the 8-cycle burst slot
-    logic [15:0] skip;                      // leading words to drop
-    logic [15:0] words_left;                // words still to deliver
-    // data capture: a READ issued in cycle t returns beats 0..7 in cycles t+RL..t+RL+7
-    logic [RL_MAX+8:0] rd_mark;             // rd_mark[k]: a READ issued k cycles ago
-    logic [1:0]  rl_sel;                    // calibrated latency - RL_MIN
+    logic [14:0] b_next;
+    logic [15:0] bursts_left;
+    logic [2:0]  ph;
+    logic [15:0] skip;
+    logic [15:0] words_left;
+    logic [RL_MAX+8:0] rd_mark;
+    logic [1:0]  rl_sel;
     logic [2:0]  beat;
     logic        beat_v;
-    logic [31:0] dq_q;                      // DQ sampled at our clock edge
-    logic [6:0]  wcol;                      // column bits of the write: {w[8:4], w[1:0]}
-    logic [31:0] lo;                        // first beat of a word
+    logic [31:0] dq_q;
+    logic [6:0]  wcol;
+    logic [31:0] lo;
 
-    // beat valid and data at the selected latency
     always_comb begin
         beat_v = 1'b0;
         for (int k = 0; k < 8; k++)
@@ -111,15 +86,12 @@ module sdram_ctrl #(
         dq_q    <= sd_dq_i;
     end
 
-    // ---- calibration pattern
     function automatic logic [31:0] pat(input logic [2:0] i);
         return 32'hA5C3_0F00 ^ {i, 5'b0, ~i, 5'b0, i, 13'h1F00};
     endfunction
     logic [2:0] cal_i;
     logic [RL_N-1:0] cal_ok;
 
-    // a word is delivered in the cycle its second beat is in dq_q (not re-registered: on
-    // Gowin a register fed by registers costs a pass-through LUT per bit)
     assign rvalid = (st == RD_RUN || st == RD_DRAIN) && beat_v && beat[0] && skip == 0
                     && words_left != 0;
     assign rdata  = {dq_q, lo};
@@ -137,7 +109,6 @@ module sdram_ctrl #(
         if (ref_cnt != 0) ref_cnt <= ref_cnt - 16'd1;
         else              ref_due <= 1'b1;
 
-        // ---- read data: two beats per word, words outside the request dropped
         if (st == RD_RUN || st == RD_DRAIN || st == CAL_RD || st == CAL_CHK) begin
             if (beat_v) begin
                 beat <= beat + 3'd1;
@@ -164,12 +135,11 @@ module sdram_ctrl #(
             beat    <= '0;
         end else begin
             unique case (st)
-                // ---------------------------------------------------------- init
                 I_WAIT: if (wt != 0) wt <= wt - 16'd1; else st <= I_PRE;
 
                 I_PRE: begin
                     cmd        <= C_PRE;
-                    sd_addr    <= 11'b100_0000_0000;        // all banks
+                    sd_addr    <= 11'b100_0000_0000;
                     n_ref      <= 4'd8;
                     wt         <= 16'(T_RP);
                     after      <= I_REF;
@@ -185,7 +155,6 @@ module sdram_ctrl #(
                 end
 
                 I_MRS: begin
-                    // single-location writes, CAS latency, sequential bursts of 8
                     cmd     <= C_MRS;
                     sd_ba   <= 2'b00;
                     sd_addr <= {1'b0, 1'b1, 2'b00, 3'(CAS), 1'b0, 3'b011};
@@ -195,15 +164,13 @@ module sdram_ctrl #(
                     st      <= WAIT;
                 end
 
-                // ---------------------------------------------------------- calibration
-                // write the pattern to bank 0, row 0, columns 0..7, then read it as a burst
                 CAL_WR: begin
                     cmd     <= C_ACT;
                     sd_ba   <= 2'b00;
                     sd_addr <= '0;
                     st      <= WAIT;
                     wt      <= 16'(T_RCD);
-                    after   <= WR_LO;                     // reuse the write sequence
+                    after   <= WR_LO;
                 end
 
                 CAL_RD: begin
@@ -218,10 +185,9 @@ module sdram_ctrl #(
                 end
 
                 CAL_CHK: begin
-                    // issued once (wt is re-armed below); then compare every candidate
                     if (wt == 16'hFFFF) begin
                         cmd     <= C_RD;
-                        sd_addr <= 11'b100_0000_0000;     // auto precharge, column 0
+                        sd_addr <= 11'b100_0000_0000;
                         wt      <= 16'(RL_MAX + 9);
                         cal_i   <= '0;
                     end else if (wt != 0) begin
@@ -237,7 +203,6 @@ module sdram_ctrl #(
                     end
                 end
 
-                // ---------------------------------------------------------- idle
                 IDLE: begin
                     beat <= '0;
                     if (ref_due) begin
@@ -265,16 +230,15 @@ module sdram_ctrl #(
                     end
                 end
 
-                // ---------------------------------------------------------- writes
                 WR_LO: begin
                     cmd      <= C_WR;
                     sd_dq_oe <= 1'b1;
-                    if (!ready) begin                       // calibration pattern
+                    if (!ready) begin
                         sd_addr <= {3'b000, 5'b0, cal_i};
                         sd_dq_o <= pat(cal_i);
                         cal_i   <= cal_i + 3'd1;
                         if (cal_i == 3'd7) begin
-                            sd_addr[10] <= 1'b1;            // last: auto precharge
+                            sd_addr[10] <= 1'b1;
                             wt    <= 16'(T_WR + T_RP + 1);
                             after <= CAL_RD;
                             st    <= WAIT;
@@ -289,15 +253,13 @@ module sdram_ctrl #(
                 WR_HI: begin
                     cmd      <= C_WR;
                     sd_dq_oe <= 1'b1;
-                    sd_addr  <= {3'b100, wcol, 1'b1};   // auto precharge
+                    sd_addr  <= {3'b100, wcol, 1'b1};
                     sd_dq_o  <= wr_data[63:32];
                     wt       <= 16'(T_WR + T_RP + 1);
                     after    <= IDLE;
                     st       <= WAIT;
                 end
 
-                // ---------------------------------------------------------- read stream
-                // slot of 8 cycles per burst: ACT at ph 0, READ (auto precharge) at ph T_RCD
                 RD_RUN: begin
                     ph <= ph + 3'd1;
                     if (ph == 0) begin
@@ -318,11 +280,10 @@ module sdram_ctrl #(
                     end
                 end
 
-                // let the last bursts arrive and precharge, then continue or finish
                 RD_DRAIN: begin
                     if (wt != 0) begin
                         wt <= wt - 16'd1;
-                    end else if (bursts_left != 0) begin    // paused for a refresh
+                    end else if (bursts_left != 0) begin
                         cmd     <= C_REF;
                         ref_due <= 1'b0;
                         ref_cnt <= 16'(REF_CYC);

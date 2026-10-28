@@ -1,15 +1,3 @@
-// npu_array: N x N output-stationary MAC array with row skew and shadow outputs.
-//
-// All rows' A values and all columns' B values for reduction index k are presented in the
-// same cycle. Row r is delayed r cycles: its A value and valid/last reach all N PEs of the
-// row at once, while B moves down the columns one row per cycle, so A[r][k] and B[k][c]
-// meet in PE(r,c) in cycle t+r. A group's last value moves each PE's finished sum into its
-// shadow register as it passes, and the next group can follow right behind it.
-//
-// Depthwise mode (dw = 1; PE(r,c) = output pixel r x channel lane c): instead of A[r], every
-// PE takes byte c of the one activation word dw_a, so row r works r cycles after row 0 on
-// whatever word is then on dw_a.
-
 `default_nettype none
 
 module npu_array
@@ -19,14 +7,13 @@ module npu_array
     input  wire logic                     rst,
     input  wire logic                     valid,
     input  wire logic                     last,
-    input  wire logic signed [DATA_W-1:0] a [N],   // a[r]: row r operand
-    input  wire logic signed [DATA_W-1:0] b [N],   // b[c]: column c operand
+    input  wire logic signed [DATA_W-1:0] a [N],
+    input  wire logic signed [DATA_W-1:0] b [N],
     input  wire logic                     dw,
-    input  wire logic [WORD_W-1:0]        dw_a,      // depthwise: activation word, all rows
+    input  wire logic [WORD_W-1:0]        dw_a,
     output      logic signed [ACC_W-1:0]  shadow [N][N]
 );
 
-    // ---- row skew: row r's A, valid and last delayed by r cycles
     logic signed [DATA_W-1:0] a_sk [N];
     logic                     v_sk [N];
     logic                     l_sk [N];
@@ -56,7 +43,6 @@ module npu_array
         end
     end
 
-    // ---- PE grid: b_v[r][c] enters PE(r,c) from above
     logic signed [DATA_W-1:0] b_v [N+1][N];
     for (genvar c = 0; c < N; c++) begin : g_col
         assign b_v[0][c] = b[c];
@@ -76,7 +62,6 @@ module npu_array
         end
     end
 
-    // Outputs off the bottom edge are unused.
     logic unused;
     always_comb begin
         unused = 1'b0;

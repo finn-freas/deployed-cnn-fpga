@@ -1,16 +1,3 @@
-// npu_display: 640x480 HDMI overlay for the person detector.
-//
-//   left:  the 48x48 gray thumbnail of the last input, scaled x8, framed green (person),
-//          red (no person) or gray (no result yet)
-//   right: text (5x7 font, x2): title, verdict, score, latency in microseconds, run count
-//          and status
-//
-// Regions and addresses come from counters stepped by the raster (flags flip on equality
-// with the region edges, one cycle ahead), not from comparators. Pipeline: raster (cycle 0)
-// -> thumbnail RAM and font ROM read (cycle 1) -> colour (cycle 2); de/hsync/vsync are
-// delayed to match. Latency = cycles * 1e6 / NPU_HZ, formed by shift-and-add when a new
-// result arrives, then converted to decimal.
-
 `default_nettype none
 
 module npu_display #(
@@ -18,7 +5,6 @@ module npu_display #(
 ) (
     input  wire logic        clk,
     input  wire logic        rst,
-    // status (same clock domain)
     input  wire logic        booted,
     input  wire logic        boot_err,
     input  wire logic        busy,
@@ -27,10 +13,8 @@ module npu_display #(
     input  wire logic signed [7:0] res_score,
     input  wire logic [31:0] res_cycles,
     input  wire logic [15:0] res_count,
-    // thumbnail
     output      logic [11:0] thumb_raddr,
     input  wire logic [3:0]  thumb_rdata,
-    // video out (to dvi_tx)
     output      logic        de,
     output      logic        hsync,
     output      logic        vsync,
@@ -39,11 +23,10 @@ module npu_display #(
     output      logic [7:0]  b
 );
 
-    // ------------------------------------------------------------------ numbers to text
-    localparam int US_K = int'((64'd1 << 16) * 64'd1_000_000 / 64'(NPU_HZ));   // us per cycle, Q16
+    localparam int US_K = int'((64'd1 << 16) * 64'd1_000_000 / 64'(NPU_HZ));
     logic [15:0] cnt_seen;
-    logic        conv;                      // a new result: start the conversions
-    logic [47:0] us_acc;                    // cycles * US_K
+    logic        conv;
+    logic [47:0] us_acc;
     logic [31:0] m_a;
     logic [15:0] m_b;
     logic [4:0]  m_n;
@@ -78,7 +61,7 @@ module npu_display #(
     assign sc_mag = res_score < 0 ? 8'(-res_score) : 8'(res_score);
 
     logic [31:0] us_int;
-    assign us_int = 32'((us_acc + (48'd1 << 15)) >> 16);       // rounded microseconds
+    assign us_int = 32'((us_acc + (48'd1 << 15)) >> 16);
     bin2bcd #(.BITS(20), .DIGITS(6)) u_us (.clk, .rst, .start(us_start),
         .bin((us_int > 32'd999_999) ? 20'd999_999 : 20'(us_int)), .bcd(us_bcd), .busy(us_busy));
     bin2bcd #(.BITS(8), .DIGITS(3)) u_sc (.clk, .rst, .start(conv), .bin(sc_mag), .bcd(sc_bcd), .busy(sc_busy));
@@ -86,22 +69,19 @@ module npu_display #(
 
     localparam int NCH = 12, NL = 6;
 
-    // decimal digit as a character, blank if a leading zero
     function automatic logic [6:0] dch(input logic [3:0] d, input logic blank);
         return blank ? 7'h20 : 7'h30 + 7'(d);
     endfunction
 
-    // character c of a 12-character string literal (packed: character 0 in the top byte)
     function automatic logic [6:0] str(input logic [8 * NCH - 1:0] s, input int c);
         return (c >= 0 && c < NCH) ? 7'(s >> (8 * (NCH - 1 - c))) : 7'h20;
     endfunction
 
-    // ------------------------------------------------------------------ text: char at (line, col)
     logic person;
     assign person = res_class == 8'd1;
 
-    logic [2:0] li;                         // text line under the raster
-    logic [3:0] col;                        // character column under the raster
+    logic [2:0] li;
+    logic [3:0] col;
     logic [6:0] ch;
     always_comb begin
         int c;
@@ -144,23 +124,21 @@ module npu_display #(
         endcase
     end
 
-    // ------------------------------------------------------------------ raster
     logic [10:0] x;
     logic [9:0]  y;
     logic        act0, hs0, vs0, fs0;
     video_timing u_vt (.clk, .rst, .x, .y, .active(act0), .hsync(hs0), .vsync(vs0), .frame_start(fs0));
 
-    localparam int HT = 800;                                   // video_timing's line length
-    localparam int IX = 32, IY = 48, IS = 8 * 48, BW = 6;      // thumbnail origin, size, frame
-    localparam int TX = 440, TY0 = 56, TDY = 40;               // text origin, line pitch
+    localparam int HT = 800;
+    localparam int IX = 32, IY = 48, IS = 8 * 48, BW = 6;
+    localparam int TX = 440, TY0 = 56, TDY = 40;
 
-    // region flags, aligned with x/y: set/cleared when the raster reaches the edge
     logic img_x, img_y, frm_x, frm_y, txt_x, txt_y;
-    logic [2:0]  sx, sy;                    // position within a thumbnail pixel
+    logic [2:0]  sx, sy;
     logic [5:0]  tcol;
-    logic [11:0] trow;                      // thumbnail row * 48
-    logic [3:0]  cx;                        // position within a text cell (x)
-    logic [5:0]  lp;                        // position within a text line pitch (y)
+    logic [11:0] trow;
+    logic [3:0]  cx;
+    logic [5:0]  lp;
     logic        eol;
     assign eol = (x == 11'(HT - 1));
 
@@ -170,7 +148,6 @@ module npu_display #(
             li <= '0;
             lp <= '0;
         end else begin
-            // ---- horizontal
             if (x == 11'(IX - BW - 1))      frm_x <= 1'b1;
             if (x == 11'(IX + IS + BW - 1)) frm_x <= 1'b0;
             if (x == 11'(IX - 1)) begin
@@ -191,7 +168,6 @@ module npu_display #(
                 if (cx == 4'd15) col <= col + 4'd1;
             end
             if (x == 11'(TX + 16 * NCH - 1)) txt_x <= 1'b0;
-            // ---- vertical, at the end of each line
             if (eol) begin
                 if (y == 10'(IY - BW - 1))      frm_y <= 1'b1;
                 if (y == 10'(IY + IS + BW - 1)) frm_y <= 1'b0;
@@ -221,7 +197,6 @@ module npu_display #(
     end
     assign thumb_raddr = trow + 12'(tcol);
 
-    // ------------------------------------------------------------------ cycle 1: reads
     logic [7:0] f_bits;
     font_rom u_font (.clk, .ch, .row(lp[3:1]), .bits(f_bits));
 
@@ -236,11 +211,10 @@ module npu_display #(
         act1 <= act0; hs1 <= hs0; vs1 <= vs0;
     end
 
-    // ------------------------------------------------------------------ cycle 2: colour
     always_ff @(posedge clk) begin
         logic [7:0] rr, gg, bb, gray;
         gray = {thumb_rdata, thumb_rdata};
-        {rr, gg, bb} = {8'd16, 8'd18, 8'd28};                       // background
+        {rr, gg, bb} = {8'd16, 8'd18, 8'd28};
         if (in_frame1 && !in_img1) begin
             if (!res_valid)  {rr, gg, bb} = {8'd90, 8'd90, 8'd90};
             else if (person) {rr, gg, bb} = {8'd40, 8'd210, 8'd70};

@@ -1,8 +1,3 @@
-// npu_probe_top: synthesis-only probe of the NPU core's resource use on the GW2AR-18.
-// Not a working board design: host/debug ports and the external-store port are driven
-// from an LFSR, and the outputs are XOR-reduced to LEDs, just enough to keep synthesis
-// from removing logic. The real flash/SDRAM controller will sit on the external port.
-
 `default_nettype none
 
 module npu_probe_top (

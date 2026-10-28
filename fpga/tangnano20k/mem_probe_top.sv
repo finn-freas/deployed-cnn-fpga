@@ -1,7 +1,3 @@
-// mem_probe_top: place-and-route probe of the NPU's block RAMs alone (same shapes as the
-// core: activation 7168x64, A_T 2048x64, weight buffer 1024x64, param buffer 256x70,
-// instruction memory 320x32), driven from an LFSR.
-
 `default_nettype none
 
 module mem_probe_top (

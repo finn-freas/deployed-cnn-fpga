@@ -1,12 +1,3 @@
-"""cocotb: the full NPU core running compiled MNIST / VWW programs, bit-exact vs TFLite.
-
-For each model (skipped if its golden data hasn't been generated):
-  * step mode: pause after every instruction and compare that layer's output tensor,
-    read back through the debug port, with the TFLite reference-kernel golden tensor
-  * full speed: final class/score vs golden, plus measured cycle counts
-Image counts can be raised with NPU_CORE_IMAGES=<n> (layer-checked) and NPU_CORE_FAST=<n>.
-"""
-
 import os
 import sys
 from pathlib import Path
@@ -26,12 +17,8 @@ MODELS = {"mnist": ROOT / "build" / "model", "vww": ROOT / "build" / "vww"}
 SEL_IMEM, SEL_ACT, SEL_EXT = 0, 2, 3
 LAYER_IMAGES = int(os.environ.get("NPU_CORE_IMAGES", "3"))
 FAST_IMAGES = int(os.environ.get("NPU_CORE_FAST", "10"))
-EXT_FLASH = os.environ.get("NPU_EXT_FLASH", "0") == "1"         # weights over SPI flash
-# RTL cycles == simulator model (the model covers the ext_mem_model back-end only)
+EXT_FLASH = os.environ.get("NPU_EXT_FLASH", "0") == "1"
 CHECK_CYCLES = os.environ.get("NPU_CHECK_CYCLES", "0" if EXT_FLASH else "1") == "1"
-
-
-# ---------------------------------------------------------------- host access helpers
 
 async def reset(dut):
     dut.rst.value = 1
@@ -45,7 +32,6 @@ async def reset(dut):
     await FallingEdge(dut.clk)
     dut.rst.value = 0
 
-
 async def host_write_block(dut, sel, values, base=0):
     dut.host_sel.value = sel
     for i, v in enumerate(values):
@@ -55,25 +41,19 @@ async def host_write_block(dut, sel, values, base=0):
         await FallingEdge(dut.clk)
     dut.host_we.value = 0
 
-
 async def load_model(dut, prog):
-    # instruction memory: each instruction as INSTR_W/32 words, low word first
     beats = isa.INSTR_W // 32
     words = [(ins.encode() >> (32 * b)) & 0xFFFFFFFF for ins in prog.instrs for b in range(beats)]
     await host_write_block(dut, SEL_IMEM, words)
     await host_write_block(dut, SEL_EXT, prog.ext_words())
 
-
 async def load_image(dut, image_u8, base):
-    """Packed uint8 HWC bytes into activation memory at `base`, 8 bytes per word."""
     flat = np.asarray(image_u8, np.uint8).reshape(-1)
     buf = np.zeros(-(-flat.size // 8) * 8, np.uint8)
     buf[:flat.size] = flat
     await host_write_block(dut, SEL_ACT, np.frombuffer(buf.tobytes(), dtype="<u8").tolist(), base)
 
-
 async def read_act(dut, base, count):
-    """Read `count` activation words through the debug port (1-cycle read latency)."""
     out = np.zeros((count, isa.N), np.int8)
     dut.dbg_addr.value = base
     await FallingEdge(dut.clk)
@@ -85,14 +65,10 @@ async def read_act(dut, base, count):
         await FallingEdge(dut.clk)
     return out
 
-
 async def pulse(sig, dut):
     sig.value = 1
     await FallingEdge(dut.clk)
     sig.value = 0
-
-
-# ---------------------------------------------------------------- per-model test body
 
 async def run_model(dut, name):
     model_dir = MODELS[name]
@@ -110,7 +86,6 @@ async def run_model(dut, name):
     dut._log.info(f"{name}: loaded {len(prog.instrs)} instrs, {prog.ext_used} external words, "
                   f"{len(prog.params)} params")
 
-    # ---- step mode: every layer
     per_instr_cycles = []
     for i in range(min(LAYER_IMAGES, len(gold["labels"]))):
         await load_image(dut, gold["images"][i], prog.meta["input"]["base"])
@@ -136,7 +111,6 @@ async def run_model(dut, name):
         assert int(dut.result_class.value) == exp_cls, f"image {i}: class"
         dut._log.info(f"{name} image {i}: all {len(layer_at)} layers bit-exact, class {exp_cls}")
 
-    # The simulator's cycle model must reproduce the RTL exactly.
     model = NpuSim.from_program(prog)
     model.run(gold["images"][0])
     total = sum(c for _, c in per_instr_cycles)
@@ -147,7 +121,6 @@ async def run_model(dut, name):
         assert [c for _, c in per_instr_cycles] == model.stats.cycles, "cycle model != RTL"
     expected_total = total_cycles(model.stats, len(prog.instrs))
 
-    # ---- full speed: final result + cycles
     dut.step_mode.value = 0
     correct = 0
     n = min(FAST_IMAGES, len(gold["labels"]))
@@ -168,30 +141,24 @@ async def run_model(dut, name):
                   f"{cycles} cycles/inference = {cycles / 25.2:.0f} us @ 25.2 MHz "
                   f"(per-instruction sum in step mode: {total})")
 
-
 @cocotb.test()
 async def core_mnist(dut):
     await run_model(dut, "mnist")
 
-
 @cocotb.test()
 async def core_vww(dut):
     await run_model(dut, "vww")
-
 
 SOURCES = ["npu/npu_pkg.sv", "common/sdpram.sv", "npu/npu_pe.sv", "npu/npu_array.sv",
            "npu/npu_requant.sv", "npu/npu_tile_engine.sv", "npu/npu_pool.sv", "npu/npu_core.sv",
            "common/spi_flash_reader.sv", "sim/spi_flash_model.sv", "sim/ext_mem_model.sv",
            "sim/npu_sim_top.sv"]
 
-
 def test_npu_core():
     from sim import run
     run("npu_sim_top", SOURCES, "test_npu_core")
 
-
 def test_npu_core_spi_flash():
-    """Same checks with weights/params streamed from SPI flash (the board's weight path)."""
     from sim import run
     run("npu_sim_top", SOURCES, "test_npu_core", parameters={"EXT_FLASH": 1},
         extra_env={"NPU_EXT_FLASH": "1", "NPU_CORE_IMAGES": os.environ.get("NPU_CORE_IMAGES", "1"),

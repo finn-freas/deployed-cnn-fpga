@@ -1,5 +1,3 @@
-"""Shared helper: build an RTL top with Verilator and run a cocotb test module."""
-
 from pathlib import Path
 
 from cocotb_tools.runner import get_runner
@@ -8,10 +6,8 @@ ROOT = Path(__file__).resolve().parents[1]
 TB_DIR = ROOT / "tb"
 RTL = ROOT / "rtl"
 
-
 def run(top: str, sources: list[str], test_module: str, parameters: dict | None = None,
         waves: bool = False, testcase: str | None = None, extra_env: dict | None = None):
-    """sources are paths relative to rtl/."""
     build_dir = ROOT / "build" / "sim" / (top + "".join(f"_{k}{v}" for k, v in (parameters or {}).items()))
     runner = get_runner("verilator")
     runner.build(

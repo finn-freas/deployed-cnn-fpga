@@ -1,14 +1,11 @@
-// reset_sync: asynchronous assert, synchronous release.
-// Output stays asserted for STAGES cycles after rst_async_in deasserts.
-
 `default_nettype none
 
 module reset_sync #(
     parameter int STAGES = 3
 ) (
     input  wire logic clk,
-    input  wire logic rst_async_in,  // active-high
-    output      logic rst_out        // active-high, synchronous release
+    input  wire logic rst_async_in,
+    output      logic rst_out
 );
 
     logic [STAGES-1:0] sync;

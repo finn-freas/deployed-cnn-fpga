@@ -1,5 +1,3 @@
-"""cocotb: spi_flash_reader against a behavioural SPI flash."""
-
 import random
 
 import cocotb
@@ -7,7 +5,6 @@ from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge
 
 BASE = 0x40_0000
-
 
 @cocotb.test()
 async def bursts_match_flash_contents(dut):
@@ -47,7 +44,6 @@ async def bursts_match_flash_contents(dut):
                 got.append(int(dut.rdata.value))
         assert got == words[start:start + length], f"burst ({start}, {length}) mismatch"
     dut._log.info("all bursts match")
-
 
 def test_spi_flash():
     from sim import run

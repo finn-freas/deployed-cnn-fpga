@@ -1,13 +1,9 @@
-// colorbars_top: Phase 0 bring-up design for the Tang Nano 20K.
-// HDMI 640x480@60 color bars with a bouncing square; LED0 blinks at ~1.5 Hz.
-// S1 (pin 88, active-high) resets.
-
 `default_nettype none
 
 module colorbars_top (
     input  wire logic       clk_27,
     input  wire logic       btn_s1,
-    output      logic [5:0] led_n,       // active-low
+    output      logic [5:0] led_n,
     output      logic       tmds_clk_p,
     output      logic       tmds_clk_n,
     output      logic [2:0] tmds_d_p,

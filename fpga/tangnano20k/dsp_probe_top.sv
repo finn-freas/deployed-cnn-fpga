@@ -1,7 +1,3 @@
-// dsp_probe_top: synthesis/PnR probe -- can the open flow place the NPU's DSP load?
-// 64 registered signed 8x8 multiply-accumulates (like the PE array) + one 32x32 multiply
-// (like requant), fed from an LFSR, reduced to LEDs.
-
 `default_nettype none
 
 module dsp_probe_top (

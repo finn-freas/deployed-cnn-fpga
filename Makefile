@@ -1,14 +1,3 @@
-# Top-level build for deployed-cnn-fpga
-#   make env      - create Python environments
-#   make model    - train the MNIST CNN (optional; a trained model is committed)
-#   make ir       - export the TFLite model to IR + golden tensors (TensorFlow env)
-#   make compile  - compile IR to NPU memory images (build/npu)
-#   make vww      - MLPerf Tiny VWW: build vww01, export IR + golden, compile (build/npu_vww)
-#   make pkg      - regenerate rtl/npu/npu_pkg.sv from sw/npu/isa.py
-#   make lint     - Verilator lint of all portable RTL
-#   make test     - software tests + cocotb RTL tests
-#   make fpga     - build the Tang Nano 20K bitstream (TOP=... to choose)
-
 SHELL := /bin/bash
 OSS   ?= $(HOME)/oss-cad-suite
 TOOLS := export PATH="$(OSS)/bin:$$PATH" &&
@@ -17,7 +6,6 @@ PYTF  := $(CURDIR)/.venv-tf/bin/python
 TOP   ?= colorbars_top
 MODEL ?= models/mnist_int8.tflite
 
-# Portable RTL (no vendor primitives); rtl/gowin is synthesis-only. Packages go first.
 RTL_PKGS     := $(shell find rtl -name '*_pkg.sv' -not -path 'rtl/gowin/*' | sort)
 RTL_MODULES  := $(shell find rtl -name '*.sv' -not -name '*_pkg.sv' -not -path 'rtl/gowin/*' | sort)
 RTL_TOPS     := $(shell sed -n 's/^module \([A-Za-z0-9_]*\).*/\1/p' $(RTL_MODULES))
@@ -51,8 +39,6 @@ ir: build/model/golden.npz
 compile: ir
 	cd sw && $(PY) -m npu.compiler ../build/model --out ../build/npu
 
-# MLPerf Tiny Visual Wake Words. VWW_OFFICIAL=<extracted vw_coco2014_96 dir> uses the exact
-# MLPerf images; otherwise vww01 is rebuilt from COCO val2017 (approximate pixels).
 VWW_MODEL := models/vww/vww_96_int8.tflite
 build/vww/vww01.npz: sw/model/make_vww01.py models/vww/y_labels.csv
 	$(PYTF) sw/model/make_vww01.py --out $@ $(if $(VWW_OFFICIAL),--official $(VWW_OFFICIAL))

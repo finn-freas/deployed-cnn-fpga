@@ -1,15 +1,3 @@
-"""Step-by-step checks of a Tang Nano 20K running the bring-up or the NPU bitstream.
-
-    python sw/board/board_check.py --port COM5                       # bring-up bitstream
-    python sw/board/board_check.py --port COM5 --model models/ir/vww # ... and the flash holds this model
-    python sw/board/board_check.py --port COM5 --npu --model models/ir/vww   # NPU bitstream
-
-Bring-up bitstream (fpga/tangnano20k/bringup_top.sv): UART ping, SDRAM calibration, a
-write/read test of the SDRAM region the NPU uses, and the model image in flash. NPU
-bitstream (npu_board_top): images over the UART, each result compared with the cycle-exact
-simulator, which is bit-exact with the hardware. See docs/bringup.md.
-"""
-
 import argparse
 import re
 import sys
@@ -25,7 +13,6 @@ from npu.compiler import compile_ir, load_ir  # noqa: E402
 NPU_HZ = 54_000_000
 FAILED = []
 
-
 def report(name, ok, detail="", hint=""):
     print(f"[{'PASS' if ok else 'FAIL'}] {name}" + (f": {detail}" if detail else ""))
     if not ok:
@@ -34,9 +21,7 @@ def report(name, ok, detail="", hint=""):
             print("       -> " + hint.replace("\n", "\n          "))
     return ok
 
-
 def read_line(port, timeout):
-    """One reply line; skips blank lines. '' on timeout."""
     end = time.monotonic() + timeout
     buf = bytearray()
     while time.monotonic() < end:
@@ -52,7 +37,6 @@ def read_line(port, timeout):
             buf += b
     return buf.decode(errors="replace").strip()
 
-
 def read_exact(port, n, timeout):
     end = time.monotonic() + timeout
     buf = b""
@@ -60,21 +44,17 @@ def read_exact(port, n, timeout):
         buf += port.read(n - len(buf))
     return buf
 
-
 def ask(port, cmd: bytes, timeout=1.0):
     port.reset_input_buffer()
     port.write(cmd)
     return read_line(port, timeout)
 
-
 def dq_lines(got: int, exp: int) -> str:
-    """Which SDRAM DQ lines differ: a 64-bit word is two 32-bit beats on DQ0..31."""
     diff = got ^ exp
     lines = sorted({b % 32 for b in range(64) if diff >> b & 1})
     if len(lines) > 24:
         return "almost every bit"
     return ", ".join(f"DQ{n}" for n in lines)
-
 
 def expected_flash(model_dir: Path):
     prog = compile_ir(*load_ir(model_dir))
@@ -82,7 +62,6 @@ def expected_flash(model_dir: Path):
     header = boot_words(prog, np.zeros((m["h"], m["w"], m["c"]), np.uint8))[0]
     ext = prog.ext_words()
     return prog, header, len(ext), image_sum(ext)
-
 
 def check_bringup(port, model_dir, extra=0.0):
     r = ask(port, b"p", 1 + extra)
@@ -126,7 +105,6 @@ def check_bringup(port, model_dir, extra=0.0):
                f"{int(m[2], 16)} words, sum {m[3]}" + ("" if same else f" (expected {n} words, sum {s:08x})"),
                "the flash holds another model or a corrupted write: write it again (with --verify)")
 
-
 def check_npu(port, model_dir, n_images, extra_timeout, seed=0):
     from npu.sim import NpuSim
     prog = compile_ir(*load_ir(model_dir))
@@ -139,7 +117,6 @@ def check_npu(port, model_dir, n_images, extra_timeout, seed=0):
         cls, score = sim.run(img)
         port.reset_input_buffer()
         port.write(b"I" + img.tobytes())
-        # the upload alone takes 10 bit times per byte (0.28 s for a 96x96 RGB image)
         reply = read_exact(port, 7, (img.size + 1) * 10 / port.baudrate + extra_timeout)
         if len(reply) != 7 or reply[0] != 0xA5:
             report(f"inference {i}", False, f"reply {reply!r}",
@@ -156,7 +133,6 @@ def check_npu(port, model_dir, n_images, extra_timeout, seed=0):
                "marginal (run the bring-up SDRAM test several times)")
     if times:
         print(f"       NPU latency {np.mean(times):.2f} ms per image at 54 MHz")
-
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -185,7 +161,6 @@ def main():
     print("\nall checks passed" + ("" if args.npu else
           ": next, load npu_board_top (make -C fpga/tangnano20k TOP=npu_board_top FREQ_MHZ=54 prog)\n"
           "and run this script with --npu --model <the model in flash>"))
-
 
 if __name__ == "__main__":
     main()

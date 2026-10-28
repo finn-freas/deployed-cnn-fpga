@@ -1,10 +1,3 @@
-// ext_mem_model: behavioural model of the external weight/param store (simulation only).
-//
-// Burst reads: a request (addr, len) is accepted when idle; after LATENCY cycles the
-// words come back one every CYCLES_PER_WORD cycles. The defaults model a 32-bit SDRAM
-// at about half its peak rate; a QSPI flash is roughly LATENCY=20, CYCLES_PER_WORD=16.
-// A write port loads the contents (what a flash programmer / boot loader would do).
-
 `default_nettype none
 
 module ext_mem_model
@@ -21,7 +14,6 @@ module ext_mem_model
     output      logic              ack,
     output      logic              rvalid,
     output      logic [WORD_W-1:0] rdata,
-    // contents loading
     input  wire logic              we,
     input  wire logic [EXT_AW-1:0] waddr,
     input  wire logic [WORD_W-1:0] wdata

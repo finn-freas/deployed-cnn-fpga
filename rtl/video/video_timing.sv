@@ -1,7 +1,3 @@
-// video_timing: raster counters and sync generation.
-// Defaults are VESA 640x480@60 (25.175 MHz nominal; 25.2 MHz is within monitor tolerance).
-// All outputs are registered and aligned to each other.
-
 `default_nettype none
 
 module video_timing #(
@@ -13,16 +9,16 @@ module video_timing #(
     parameter int V_FP     = 10,
     parameter int V_SYNC   = 2,
     parameter int V_BP     = 33,
-    parameter bit SYNC_NEG = 1'b1   // 640x480 uses negative sync polarity
+    parameter bit SYNC_NEG = 1'b1
 ) (
     input  wire logic        clk,
     input  wire logic        rst,
-    output      logic [10:0] x,       // pixel column, valid when active
-    output      logic [9:0]  y,       // pixel row, valid when active
-    output      logic        active,  // inside the visible area
+    output      logic [10:0] x,
+    output      logic [9:0]  y,
+    output      logic        active,
     output      logic        hsync,
     output      logic        vsync,
-    output      logic        frame_start  // one-cycle pulse at x=0,y=0
+    output      logic        frame_start
 );
 
     localparam int H_TOTAL = H_ACTIVE + H_FP + H_SYNC + H_BP;
@@ -43,7 +39,6 @@ module video_timing #(
         end
     end
 
-    // Register outputs so downstream logic sees a clean, aligned set.
     always_ff @(posedge clk) begin
         if (rst) begin
             x           <= '0;

@@ -1,5 +1,3 @@
-// bin2bcd: sequential double-dabble, one input bit per cycle (BITS cycles after start).
-
 `default_nettype none
 
 module bin2bcd #(
@@ -10,7 +8,7 @@ module bin2bcd #(
     input  wire logic                  rst,
     input  wire logic                  start,
     input  wire logic [BITS-1:0]       bin,
-    output      logic [4*DIGITS-1:0]   bcd,     // valid while !busy
+    output      logic [4*DIGITS-1:0]   bcd,
     output      logic                  busy
 );
     logic [BITS-1:0]     sh;

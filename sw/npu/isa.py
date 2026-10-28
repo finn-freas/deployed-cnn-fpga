@@ -1,33 +1,18 @@
-"""NPU instruction set and machine parameters: the single source of truth.
-
-rtl/npu/npu_pkg.sv is generated from this file (sw/npu/gen_pkg.py); a test checks
-the two stay in sync. See docs/isa.md for the semantics of each instruction.
-
-ISA v2: adds DWCONV and AVGPOOL, lets the first CONV read the packed (byte-per-
-channel) input directly (in_src=1), and widens fields for MobileNet-sized models.
-ISA v3 (memory system): the packed input lives in activation memory (no separate
-input buffer), and weights *and* params live in one external store (flash/SDRAM)
-addressed by w_base / p_base; the core streams them into small on-chip buffers.
-"""
-
 from dataclasses import dataclass, field, fields
 from enum import IntEnum
 
-# ---------------------------------------------------------------- machine parameters
-N = 8                 # systolic array is N x N; also channels per activation/weight word
-DATA_W = 8            # int8 operands
-ACC_W = 26            # accumulators: |sum| <= K_MAX * 128 * 128 = 2^24 fits 26 bits signed
-ACT_DEPTH = 7168      # activation memory, 64-bit words (packed input lives here too); 7 x 1K
-                      # so it maps onto 28 BSRAMs. VWW's peak is 6912 words.
-EXT_DEPTH = 65536     # external store (flash/SDRAM): weights + params, 64-bit words
-WBUF_DEPTH = 1024     # on-chip weight buffer, 64-bit words (whole layer, or one output group)
-PBUF_DEPTH = 256      # on-chip param buffer: one layer's output channels
-PARAM_WORDS = 2       # external words per param entry: {mult, bias}, {shift}
-IMEM_DEPTH = 64       # instruction memory, INSTR_W-bit words
-K_MAX = 1024          # max reduction length per CONV output (A buffer depth; see Instr.K)
+N = 8
+DATA_W = 8
+ACC_W = 26
+ACT_DEPTH = 7168
+EXT_DEPTH = 65536
+WBUF_DEPTH = 1024
+PBUF_DEPTH = 256
+PARAM_WORDS = 2
+IMEM_DEPTH = 64
+K_MAX = 1024
 INSTR_W = 160
-SHIFT_W = 6           # signed requant shift: >0 left, <=0 right
-
+SHIFT_W = 6
 
 class Op(IntEnum):
     NOP = 0x0
@@ -38,36 +23,31 @@ class Op(IntEnum):
     AVGPOOL = 0x5
     END = 0xF
 
-
-# (name, width, signed). Packed LSB-first in this order.
 FIELDS = [
     ("op",       4, False),
     ("in_base", 16, False),
     ("out_base", 16, False),
-    ("w_base",  16, False),   # external store word address of the layer's weights
-    ("p_base",  16, False),   # external store word address of the layer's params
+    ("w_base",  16, False),
+    ("p_base",  16, False),
     ("in_h",     7, False),
     ("in_w",     7, False),
-    ("in_cb",    6, False),   # channel blocks; for in_src=1 the channel count C
+    ("in_cb",    6, False),
     ("out_h",    7, False),
     ("out_w",    7, False),
     ("out_g",    6, False),
     ("ksize",    3, False),
     ("stride",   2, False),
-    ("pad",      3, False),   # top/left padding; bottom/right follows from the bounds
+    ("pad",      3, False),
     ("in_zp",    8, True),
     ("out_zp",   8, True),
     ("act_min",  8, True),
     ("act_max",  8, True),
-    ("rmode",    1, False),   # requant rounding: 0 = double, 1 = single; see quant.py
-    ("in_src",   1, False),   # CONV input: 0 = channel-blocked, 1 = packed uint8 HWC bytes
-                              # starting at byte in_base*8 of activation memory
-    ("uniform",  1, False),   # DWCONV: every channel uses param entry 0 and channel block 0's
-                              # weights (one entry, ksize^2 words), e.g. a lowered AVGPOOL
+    ("rmode",    1, False),
+    ("in_src",   1, False),
+    ("uniform",  1, False),
 ]
 assert sum(w for _, w, _ in FIELDS) <= INSTR_W
 assert K_MAX * 128 * 128 < 1 << (ACC_W - 1), "accumulators must hold K_MAX int8 products"
-
 
 @dataclass
 class Instr:
@@ -96,17 +76,14 @@ class Instr:
 
     @property
     def K(self) -> int:
-        """Reduction length per output value (CONV), or taps per channel (DWCONV)."""
         if self.op == Op.DWCONV:
             return self.ksize * self.ksize
-        if self.in_src:   # packed input: k = ky*KR + kx*C + c, each kernel row padded to KR
+        if self.in_src:
             return self.ksize * self.packed_row_k
         return self.ksize * self.ksize * self.in_cb * N
 
     @property
     def packed_row_k(self) -> int:
-        """KR for packed-input CONV: one kernel row's ksize*C bytes, padded to a multiple of N.
-        Each N-value chunk of K is then a contiguous window of one input row (O2)."""
         return -(-self.ksize * self.in_cb // N) * N
 
     def encode(self) -> int:
@@ -138,23 +115,15 @@ class Instr:
                  if f.name not in skip and (f.name in always or getattr(self, f.name) != f.default)]
         return f"{self.op.name:8s} " + " ".join(parts) + (f"   # {self.comment}" if self.comment else "")
 
-
-# ---------------------------------------------------------------- params
-# On chip (param buffer entry): {shift[5:0], mult[31:0], bias[31:0]} = 70 bits.
-# In the external store: PARAM_WORDS = 2 words per entry, word0 = {mult, bias}, word1 = shift.
 PARAM_W = SHIFT_W + 32 + 32
-
 
 def encode_param(bias: int, mult: int, shift: int) -> int:
     return ((shift & 0x3F) << 64) | ((mult & 0xFFFFFFFF) << 32) | (bias & 0xFFFFFFFF)
-
 
 def decode_param(word: int) -> tuple[int, int, int]:
     def s(v, w):
         return v - (1 << w) if v >> (w - 1) else v
     return s(word & 0xFFFFFFFF, 32), s((word >> 32) & 0xFFFFFFFF, 32), s((word >> 64) & 0x3F, 6)
 
-
 def param_ext_words(bias: int, mult: int, shift: int) -> tuple[int, int]:
-    """The two external-store words (as uint64) for one param entry."""
     return (((mult & 0xFFFFFFFF) << 32) | (bias & 0xFFFFFFFF), shift & 0xFFFFFFFFFFFFFFFF)

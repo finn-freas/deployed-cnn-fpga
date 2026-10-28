@@ -1,8 +1,3 @@
-// npu_system_tb_top: npu_system with a behavioural SPI flash, for simulation.
-// The flash is preloaded through `load_*` (byte address relative to FLASH_BASE).
-// UART runs at clk/8 to keep the simulation short. EXT_SDRAM adds the SDRAM model, clocked
-// 180 degrees from the system clock as on the board.
-
 `default_nettype none
 
 module npu_system_tb_top #(
@@ -24,7 +19,7 @@ module npu_system_tb_top #(
     input  wire logic [11:0] thumb_raddr,
     output      logic [3:0]  thumb_rdata,
     input  wire logic        load_we,
-    input  wire logic [19:0] load_addr,     // word address
+    input  wire logic [19:0] load_addr,
     input  wire logic [63:0] load_data
 );
     localparam logic [23:0] FLASH_BASE = 24'h40_0000;

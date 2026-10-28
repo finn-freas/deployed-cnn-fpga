@@ -1,8 +1,3 @@
-// tmds_encoder: DVI 1.0 TMDS 8b/10b encoder for one channel.
-// Video period (de=1): transition-minimized, DC-balanced data word.
-// Blanking (de=0): one of four control tokens selected by {c1, c0}.
-// Latency: 1 cycle. Bit 0 of `q` is transmitted first.
-
 `default_nettype none
 
 module tmds_encoder (
@@ -15,7 +10,6 @@ module tmds_encoder (
     output      logic [9:0] q
 );
 
-    // Stage 1: transition minimization (combinational)
     logic [3:0] n1_d;
     logic       use_xnor;
     logic [8:0] q_m;
@@ -33,10 +27,9 @@ module tmds_encoder (
         q_m[8] = ~use_xnor;
     end
 
-    // Stage 2: DC balance using running disparity
-    logic signed [4:0] cnt;        // running disparity (ones minus zeros), even, in [-8, 8]
+    logic signed [4:0] cnt;
     logic signed [4:0] cnt_next;
-    logic signed [4:0] diff;       // ones(q_m[7:0]) - zeros(q_m[7:0])
+    logic signed [4:0] diff;
     logic [9:0]        q_next;
 
     always_comb begin

@@ -1,21 +1,3 @@
-// bringup_top: board bring-up for the Tang Nano 20K (see docs/bringup.md).
-//
-// Same clocks, pins and memory controllers as npu_board_top, without the NPU: checks the
-// UART, the SDRAM (initialisation, read-latency calibration, a write/read test of the NPU's
-// region) and the configuration flash (the model image). Drive it with
-// sw/board/board_check.py or any terminal at 1 Mbaud: p, m, f, a.
-//
-// LEDs (active-low), 0..5:
-//   0  blinks ~1.6 Hz from the 27 MHz crystal: configured, oscillator running
-//   1  blinks ~3.2 Hz from the 54 MHz PLL: PLL locked
-//   2  SDRAM initialised and calibrated
-//   3  a test is running
-//   4  the last test passed
-//   5  the last test failed, or SDRAM calibration failed
-// S1 resets (and re-runs the SDRAM calibration); S2 runs all tests.
-//
-// Needs gowin_pack --mspi_as_gpio so the configuration flash pins stay usable as I/O.
-
 `default_nettype none
 
 module bringup_top (
@@ -29,7 +11,6 @@ module bringup_top (
     output      logic       flash_clk,
     output      logic       flash_mosi,
     input  wire logic       flash_miso,
-    // in-package SDRAM
     output      logic        O_sdram_clk,
     output      logic        O_sdram_cke,
     output      logic        O_sdram_cs_n,
@@ -47,7 +28,6 @@ module bringup_top (
     gw_pll_sys u_pll (.clk_27, .clk_sys(clk), .locked(lock));
     reset_sync u_rst (.clk, .rst_async_in(!lock || btn_s1), .rst_out(rst));
 
-    // S2: synchronise, debounce (~5 ms), one pulse per press
     logic [1:0]  s2_sync;
     logic [17:0] s2_cnt;
     logic        s2_state, run_all;
@@ -72,7 +52,7 @@ module bringup_top (
     assign IO_sdram_dq = sd_dq_oe ? sd_dq_o : 'z;
     gw_sdram_clk u_sdclk (.clk, .sdram_clk(O_sdram_clk));
 
-    logic [4:0] status;             // {fail, pass, cal_err, sdram ready, busy}
+    logic [4:0] status;
     bringup #(.CLK_HZ(CLK_HZ)) u_bu (
         .clk, .rst, .run_all, .uart_rx, .uart_tx, .status,
         .spi_cs_n(flash_cs_n), .spi_clk(flash_clk), .spi_mosi(flash_mosi), .spi_miso(flash_miso),

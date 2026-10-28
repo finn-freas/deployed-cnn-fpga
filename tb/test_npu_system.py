@@ -1,12 +1,3 @@
-"""cocotb: the board-level system (npu_system) with a behavioural SPI flash.
-
-Boots the VWW program and demo image from flash, checks the first result and the
-thumbnail, then sends another image over the UART and checks the reply.
-NPU_SYSTEM_MODEL=mnist|vww picks the model (default vww). Without the TFLite golden data
-(build/, needs TensorFlow) the committed IR in models/ir is compiled instead, on random
-images, and the simulator provides the expected results.
-"""
-
 import os
 import sys
 from pathlib import Path
@@ -22,8 +13,7 @@ from npu.board import BOOT_W, boot_words  # noqa: E402
 from npu.compiler import compile_ir, load_ir  # noqa: E402
 
 MODEL = os.environ.get("NPU_SYSTEM_MODEL", "vww")
-BIT = 8                                    # UART clocks per bit (tb top: 8 MHz / 1 Mbaud)
-
+BIT = 8
 
 async def load_flash(dut, words, base):
     for i, w in enumerate(words):
@@ -33,19 +23,17 @@ async def load_flash(dut, words, base):
         await FallingEdge(dut.clk)
     dut.load_we.value = 0
 
-
 async def uart_send(dut, data: bytes):
     for byte in data:
         for bit in [0] + [(byte >> i) & 1 for i in range(8)] + [1]:
             dut.uart_rx.value = bit
             await ClockCycles(dut.clk, BIT)
 
-
 async def uart_recv(dut, n):
     out = []
     for _ in range(n):
         await FallingEdge(dut.uart_tx)
-        await ClockCycles(dut.clk, BIT + BIT // 2)          # middle of bit 0
+        await ClockCycles(dut.clk, BIT + BIT // 2)
         v = 0
         for i in range(8):
             v |= int(dut.uart_tx.value) << i
@@ -53,9 +41,7 @@ async def uart_recv(dut, n):
         out.append(v)
     return bytes(out)
 
-
 def load_case():
-    """-> (program, two images, expected logits per image)"""
     model_dir = ROOT / "build" / ("model" if MODEL == "mnist" else MODEL)
     if (model_dir / "golden.npz").exists():
         prog = compile_ir(*load_ir(model_dir))
@@ -74,14 +60,11 @@ def load_case():
         logits.append(sim.read_tensor(last["base"], 1, 1, last["cb"], last["c"]).reshape(-1))
     return prog, images, logits
 
-
 def thumbnail(img):
-    """What npu_system computes: every second pixel of every second row, (r+2g+b)>>6."""
     s = img[0:96:2, 0:96:2].astype(np.int64)
     if img.shape[2] == 1:
         return (s[..., 0] >> 4).reshape(-1)
     return ((s[..., 0] + 2 * s[..., 1] + s[..., 2]) >> 6).reshape(-1)
-
 
 @cocotb.test()
 async def system_boot_and_uart(dut):
@@ -99,7 +82,6 @@ async def system_boot_and_uart(dut):
     dut._log.info(f"{MODEL}: flash loaded ({len(prog.ext_words())} weight/param words)")
     dut.rst.value = 0
 
-    # ---- boot run on the demo image
     await with_timeout(RisingEdge(dut.res_valid), 2000, "ms")
     await FallingEdge(dut.clk)
     assert int(dut.boot_err.value) == 0
@@ -117,7 +99,6 @@ async def system_boot_and_uart(dut):
             await FallingEdge(dut.clk)
             assert int(dut.thumb_rdata.value) == exp[a], f"thumbnail[{a}]"
 
-    # ---- an image over the UART
     in_words = -(-img1.size // 8)
     payload = np.zeros(in_words * 8, np.uint8)
     payload[:img1.size] = img1.reshape(-1)
@@ -132,21 +113,16 @@ async def system_boot_and_uart(dut):
     assert rc == int(dut.res_cycles.value) and int(dut.res_count.value) == 2
     dut._log.info(f"uart run: class {reply[1]} score {np.int8(reply[2])}, {rc} cycles")
 
-
 SOURCES = ["npu/npu_pkg.sv", "common/sdpram.sv", "common/sdpram_dc.sv", "npu/npu_pe.sv", "npu/npu_array.sv",
            "npu/npu_requant.sv", "npu/npu_tile_engine.sv", "npu/npu_pool.sv", "npu/npu_core.sv",
            "common/spi_flash_reader.sv", "board/uart.sv", "board/sdram_ctrl.sv",
            "board/npu_system.sv", "sim/spi_flash_model.sv", "sim/sdram_model.sv",
            "sim/npu_system_tb_top.sv"]
 
-
 def test_npu_system():
-    """Weights over 1-bit SPI flash."""
     from sim import run
     run("npu_system_tb_top", SOURCES, "test_npu_system")
 
-
 def test_npu_system_sdram():
-    """Weights copied to SDRAM at boot, inference reads them from there."""
     from sim import run
     run("npu_system_tb_top", SOURCES, "test_npu_system", parameters={"EXT_SDRAM": 1})

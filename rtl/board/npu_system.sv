@@ -1,27 +1,3 @@
-// npu_system: the NPU as a standalone device on a board with an SPI flash and a UART.
-//
-// Flash (64-bit words from FLASH_BASE; the core's external-store port reads words
-// 0..EXT_DEPTH-1 directly, so the weights/params image sits at the start):
-//   word BOOT_W     header {magic 6'b101101, img_c[2:0], img_w[6:0], in_words[15:0],
-//                           in_base[15:0], n_beats[15:0]}
-//   word BOOT_W+1   ext_words: length of the weights/params image
-//   then            the program: n_beats 32-bit instruction beats, two per word (low first)
-//   then            a demo image: in_words words of packed uint8 HWC bytes
-// At reset the boot loader copies the program into instruction memory and the demo image
-// into activation memory at in_base, then runs one inference. Button `run`: reload the demo
-// image and run again (the program overwrites its input while it runs).
-//
-// UART (8N1): send 0x49 ('I') then in_words*8 image bytes; the image is written to
-// activation memory, inference runs, and the reply is 0xA5, class, score, cycles (4 bytes,
-// little-endian). Send the next image only after the reply.
-//
-// EXT_SDRAM = 1: at boot the weights/params image is first copied from flash into the
-// in-package SDRAM, and the core's external-store port reads the SDRAM (one word per two
-// cycles instead of one per ~130 over 1-bit SPI).
-//
-// While an image streams in, every second pixel of every second row (from 96x96) becomes a
-// 4-bit gray pixel of a 48x48 thumbnail, which the display reads through `thumb_*`.
-
 `default_nettype none
 
 module npu_system
@@ -37,27 +13,24 @@ module npu_system
 ) (
     input  wire logic        clk,
     input  wire logic        rst,
-    input  wire logic        run,           // pulse: reload the demo image and run
+    input  wire logic        run,
     input  wire logic        uart_rx,
     output      logic        uart_tx,
     output      logic        spi_cs_n,
     output      logic        spi_clk,
     output      logic        spi_mosi,
     input  wire logic        spi_miso,
-    // status
     output      logic        booted,
-    output      logic        boot_err,      // bad header magic
+    output      logic        boot_err,
     output      logic        busy,
-    output      logic        res_valid,     // a result is available
+    output      logic        res_valid,
     output      logic [7:0]  res_class,
     output      logic signed [7:0] res_score,
     output      logic [31:0] res_cycles,
-    output      logic [15:0] res_count,     // inferences run
-    // thumbnail read port (own clock, 1-cycle latency)
+    output      logic [15:0] res_count,
     input  wire logic        thumb_clk,
     input  wire logic [11:0] thumb_raddr,
     output      logic [3:0]  thumb_rdata,
-    // SDRAM (EXT_SDRAM; dq split for simulation)
     output      logic        sd_cke,
     output      logic        sd_cs_n,
     output      logic        sd_ras_n,
@@ -73,10 +46,9 @@ module npu_system
     /* verilator lint_on UNUSEDSIGNAL */
 );
 
-    localparam int RAW = 17;                // reader word address width
-    localparam int TN  = 48;                // thumbnail side
+    localparam int RAW = 17;
+    localparam int TN  = 48;
 
-    // ------------------------------------------------------------------ NPU core
     logic              c_start, c_busy, c_done;
     logic [7:0]        c_class;
     logic signed [7:0] c_score;
@@ -105,24 +77,21 @@ module npu_system
         .ext_req(e_req), .ext_addr(e_addr), .ext_len(e_len), .ext_ack(e_ack),
         .ext_rvalid(e_rvalid), .ext_rdata(e_rdata));
 
-    // ------------------------------------------------------------------ flash reader
-    // owned by the boot loader until the program is loaded, then by the core
     logic             r_req, r_ack, r_rvalid;
     logic [RAW-1:0]   r_addr;
     logic [15:0]      r_len;
     logic [63:0]      r_rdata;
-    logic             b_req;                // boot loader request
+    logic             b_req;
     logic [RAW-1:0]   b_addr;
     logic [15:0]      b_len;
-    logic             ld_own;               // the loader owns the reader
+    logic             ld_own;
 
     spi_flash_reader #(.AW(RAW), .FLASH_BASE(FLASH_BASE), .CLK_DIV(SPI_DIV)) u_reader (
         .clk, .rst, .req(r_req), .addr(r_addr), .len(r_len), .ack(r_ack),
         .rvalid(r_rvalid), .rdata(r_rdata),
         .spi_cs_n, .spi_clk, .spi_mosi, .spi_miso);
 
-    // SDRAM: written by the boot copy, read by the core
-    /* verilator lint_off UNUSEDSIGNAL */  // half of these are unused in each configuration
+    /* verilator lint_off UNUSEDSIGNAL */
     logic        m_ready, m_cal_err, m_rd_ack, m_rvalid, m_wr_req, m_wr_ack, m_idle;
     logic [1:0]  m_cal_rl;
     logic [63:0] m_rdata;
@@ -160,34 +129,30 @@ module npu_system
         end
     end
 
-    // ------------------------------------------------------------------ UART
     localparam int DIV = (CLK_HZ + BAUD / 2) / BAUD;
     logic       rx_v, tx_v, tx_rdy;
     logic [7:0] rx_d, tx_d;
     uart_rx #(.DIV(DIV)) u_rx (.clk, .rst, .rx(uart_rx), .valid(rx_v), .data(rx_d));
     uart_tx #(.DIV(DIV)) u_tx (.clk, .rst, .valid(tx_v), .data(tx_d), .ready(tx_rdy), .tx(uart_tx));
 
-    // ------------------------------------------------------------------ boot header
     logic [15:0] n_beats, in_base, in_words;
     logic [6:0]  img_w;
     logic [2:0]  img_c;
 
-    // ------------------------------------------------------------------ image byte sink
-    // bytes in HWC order -> activation words at in_base, plus the thumbnail
-    logic        s_v;                       // a byte arrives
+    logic        s_v;
     logic [7:0]  s_d;
-    logic [2:0]  s_byte;                    // byte within the word
-    logic [15:0] s_word;                    // words written
-    logic [55:0] s_buf;                     // bytes 0..6 of the current word
-    logic        s_wr;                      // write the completed word this cycle
+    logic [2:0]  s_byte;
+    logic [15:0] s_word;
+    logic [55:0] s_buf;
+    logic        s_wr;
     logic [WORD_W-1:0] s_wdata;
-    logic [1:0]  t_c;                       // channel of this byte
-    logic [6:0]  t_x, t_y;                  // pixel of this byte
-    logic [9:0]  t_acc;                     // gray accumulator: r + 2g + b
-    logic [11:0] t_ptr;                     // next thumbnail pixel
+    logic [1:0]  t_c;
+    logic [6:0]  t_x, t_y;
+    logic [9:0]  t_acc;
+    logic [11:0] t_ptr;
     logic        t_we;
     logic [3:0]  t_wdata;
-    logic        s_done;                    // in_words words written (pulse)
+    logic        s_done;
 
     sdpram_dc #(.W(4), .D(TN * TN)) u_thumb (
         .wclk(clk), .we(t_we), .waddr(t_ptr), .wdata(t_wdata),
@@ -203,7 +168,7 @@ module npu_system
         s_wdata = {s_d, s_buf};
     end
 
-    logic s_reset;                          // start a new image
+    logic s_reset;
     always_ff @(posedge clk) begin
         s_done <= 1'b0;
         if (s_reset) begin
@@ -232,20 +197,19 @@ module npu_system
         end
     end
 
-    // ------------------------------------------------------------------ control
     typedef enum logic [3:0] {
         B_HDR, B_HDR_WAIT, B_COPY_REQ, B_COPY, B_PROG_REQ, B_PROG, B_PROG_WR, B_IMG,
         B_IMG_BYTES, B_RUN, B_WAIT, B_IDLE, B_UART_IMG, B_ERR
     } bstate_e;
     bstate_e bs;
     logic [15:0] prog_words;
-    logic        hdr2;                      // header word 1 is next
-    logic [2:0]  u_byte;                    // byte of the flash word to feed (image)
-    logic        u_v;                       // bytes of the flash word left to feed
-    logic [15:0] beat;                      // next instruction beat
-    logic        hi_beat;                   // writing the word's second beat
-    logic        reply;                     // send a UART reply when the run finishes
-    logic [2:0]  tx_idx;                    // reply byte being sent (0 = none)
+    logic        hdr2;
+    logic [2:0]  u_byte;
+    logic        u_v;
+    logic [15:0] beat;
+    logic        hi_beat;
+    logic        reply;
+    logic [2:0]  tx_idx;
     logic [55:0] tx_msg;
 
     assign booted = (bs == B_RUN) || (bs == B_WAIT) || (bs == B_IDLE) || (bs == B_UART_IMG);
@@ -253,7 +217,6 @@ module npu_system
     assign busy   = c_busy;
     assign ld_own = !booted;
 
-    // host port: program beats during boot, image words from the sink
     always_comb begin
         h_we    = 1'b0;
         h_sel   = 3'd0;
@@ -263,16 +226,15 @@ module npu_system
             h_we    = 1'b1;
             h_sel   = 3'd0;
             h_addr  = beat;
-            h_wdata = 64'(hi_beat ? r_rdata[63:32] : r_rdata[31:0]);   // reader holds the word
+            h_wdata = 64'(hi_beat ? r_rdata[63:32] : r_rdata[31:0]);
         end else if (s_wr) begin
             h_we    = 1'b1;
             h_sel   = 3'd2;
             h_addr  = in_base + s_word;
             h_wdata = s_wdata;
         end
-        // the image byte stream: flash words byte by byte, or UART bytes
         s_v = (bs == B_IMG_BYTES && u_v) || (bs == B_UART_IMG && rx_v);
-        s_d = (bs == B_UART_IMG) ? rx_d : r_rdata[8 * u_byte +: 8];   // reader holds the word
+        s_d = (bs == B_UART_IMG) ? rx_d : r_rdata[8 * u_byte +: 8];
         tx_v = (tx_idx != 0) && tx_rdy;
         tx_d = tx_msg[7:0];
     end
@@ -308,7 +270,6 @@ module npu_system
             m_wr_req  <= 1'b0;
         end else begin
             unique case (bs)
-                // ---- boot: header word
                 B_HDR: begin
                     b_req  <= 1'b1;
                     b_addr <= RAW'(BOOT_W);
@@ -334,7 +295,6 @@ module npu_system
                     if (r_rdata[63:58] != 6'b101101) bs <= B_ERR;
                 end
 
-                // ---- (EXT_SDRAM) weights/params: flash -> SDRAM, one word at a time
                 B_COPY_REQ: if (m_ready) begin
                     b_req     <= 1'b1;
                     b_addr    <= '0;
@@ -345,7 +305,7 @@ module npu_system
 
                 B_COPY: begin
                     if (b_req && r_ack) b_req <= 1'b0;
-                    if (r_rvalid) m_wr_req <= 1'b1;     // flash words are >100 cycles apart
+                    if (r_rvalid) m_wr_req <= 1'b1;
                     if (m_wr_req && m_wr_ack) begin
                         m_wr_req  <= 1'b0;
                         m_wr_addr <= m_wr_addr + 17'd1;
@@ -361,7 +321,6 @@ module npu_system
                     bs     <= B_PROG;
                 end
 
-                // ---- program words: two instruction beats each
                 B_PROG: begin
                     if (b_req && r_ack) b_req <= 1'b0;
                     if (r_rvalid) begin
@@ -375,13 +334,12 @@ module npu_system
                     if (!hi_beat && beat + 16'd1 < n_beats) begin
                         hi_beat <= 1'b1;
                     end else if (beat + 16'd1 >= n_beats) begin
-                        bs <= B_IMG;                    // program complete
+                        bs <= B_IMG;
                     end else begin
                         bs <= B_PROG;
                     end
                 end
 
-                // ---- demo image (also after `run`): words, fed to the sink byte by byte
                 B_IMG: begin
                     b_req   <= 1'b1;
                     b_addr  <= RAW'(BOOT_W + 2) + RAW'(prog_words);
@@ -402,7 +360,6 @@ module npu_system
                     if (s_done) bs <= B_RUN;
                 end
 
-                // ---- inference
                 B_RUN: if (!c_busy) begin
                     c_start <= 1'b1;
                     bs      <= B_WAIT;
@@ -412,7 +369,7 @@ module npu_system
 
                 B_IDLE: begin
                     if (run) begin
-                        bs <= B_IMG;                    // reloads the image through the loader
+                        bs <= B_IMG;
                     end else if (rx_v && rx_d == 8'h49 && tx_idx == 0) begin
                         s_reset <= 1'b1;
                         reply   <= 1'b1;
@@ -428,7 +385,6 @@ module npu_system
             endcase
         end
     end
-
 
 endmodule
 

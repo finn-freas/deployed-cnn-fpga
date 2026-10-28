@@ -1,6 +1,3 @@
-// dvi_tx: RGB + sync -> three TMDS 10-bit symbols (portable, no vendor primitives).
-// Channel 0 = blue (carries hsync/vsync), 1 = green, 2 = red. Latency: 1 cycle.
-
 `default_nettype none
 
 module dvi_tx (

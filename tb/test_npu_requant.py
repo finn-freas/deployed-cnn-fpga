@@ -1,5 +1,3 @@
-"""cocotb: npu_requant vs the TFLite-exact Python model (both rounding modes)."""
-
 import sys
 from pathlib import Path
 
@@ -11,25 +9,23 @@ from cocotb.triggers import FallingEdge
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sw"))
 from npu.quant import INT32_MAX, requantize  # noqa: E402
 
-LATENCY = 4          # inputs driven at falling edge i are visible on `out` at falling edge i+4
+LATENCY = 4
 N_VECTORS = 100_000
-
 
 def _vectors(rng, n):
     acc = rng.integers(-(1 << 24), 1 << 24, n)
     bias = rng.integers(-(1 << 24), 1 << 24, n)
     mult = rng.integers(1 << 30, INT32_MAX, n, endpoint=True)
-    mult[rng.random(n) < 0.01] = 0                        # padded channels have mult 0
+    mult[rng.random(n) < 0.01] = 0
     shift = rng.integers(-31, 8, n)
     rmode = rng.integers(0, 2, n)
     zp = rng.integers(-128, 128, n)
     lo = rng.integers(-128, 128, n)
     hi = np.maximum(lo, rng.integers(-128, 128, n))
-    lo[:2000], hi[:2000] = -128, 127                       # some unclamped, to see raw rounding
-    mult[:4], shift[:4] = INT32_MAX, [0, -31, 7, -1]       # extreme multiplier / shifts
-    shift[rmode == 1] = np.minimum(shift[rmode == 1], 0)   # single rounding: shift <= 0 (ISA)
+    lo[:2000], hi[:2000] = -128, 127
+    mult[:4], shift[:4] = INT32_MAX, [0, -31, 7, -1]
+    shift[rmode == 1] = np.minimum(shift[rmode == 1], 0)
     return acc, bias, mult, shift, rmode, zp, lo, hi
-
 
 @cocotb.test()
 async def requant_random(dut):
@@ -61,7 +57,6 @@ async def requant_random(dut):
             dut.act_max.value = int(hi[i])
     assert mismatches == 0, f"{mismatches} mismatches out of {N_VECTORS}"
     dut._log.info(f"{N_VECTORS} vectors bit-exact")
-
 
 def test_npu_requant():
     from sim import run

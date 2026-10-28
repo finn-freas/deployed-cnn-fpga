@@ -1,7 +1,3 @@
-// bringup_tb_top: the bring-up tests with the behavioural SDRAM and SPI flash, for
-// simulation. UART at clk/8; a smaller SDRAM test range; `inject` flips SDRAM data bit 5 on
-// the way back (a stuck/broken DQ line) to exercise the failure report.
-
 `default_nettype none
 
 module bringup_tb_top #(
@@ -15,7 +11,7 @@ module bringup_tb_top #(
     output      logic [4:0]  status,
     input  wire logic        inject,
     input  wire logic        load_we,
-    input  wire logic [19:0] load_addr,     // word address relative to FLASH_BASE
+    input  wire logic [19:0] load_addr,
     input  wire logic [63:0] load_data
 );
     localparam logic [23:0] FLASH_BASE = 24'h40_0000;

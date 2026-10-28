@@ -1,7 +1,3 @@
-// dsp_probe_top: synthesis/PnR probe -- can the open flow place the NPU's DSP load?
-// 64 registered signed 8x8 multiply-accumulates (like the PE array) + one 32x32 multiply
-// (like requant), fed from an LFSR, reduced to LEDs.
-
 `default_nettype none
 
 module dsp_mix_probe_top (
@@ -33,7 +29,6 @@ module dsp_mix_probe_top (
         p <= 64'(x) * 64'(m);
     end
 
-    // 11 unsigned 14x10 address-style multiplies (map to MULT18X18), like the NPU's address math
     logic [23:0] q [11];
     logic [10:0] qred;
     for (genvar j = 0; j < 11; j++) begin : g_addr

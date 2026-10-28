@@ -1,6 +1,3 @@
-// dp_probe_top: place-and-route probe of the NPU compute datapath alone -- the real
-// npu_array (64 PEs with shadows) and two npu_requant pipelines, fed from an LFSR.
-
 `default_nettype none
 
 module dp_probe_top (

@@ -2,9 +2,8 @@
 
 [![CI](https://github.com/finn-freas/deployed-cnn-fpga/actions/workflows/ci.yml/badge.svg)](https://github.com/finn-freas/deployed-cnn-fpga/actions/workflows/ci.yml)
 
-This is a neural network accelerator (NPU) I designed, running a person detector on a $50
-FPGA board (Sipeed Tang Nano 20K, Gowin GW2AR-18). It's my first big Verilog project, and
-most of what I know about hardware design I learned while building it.
+A neural network accelerator (NPU) running a person detector on a $50 FPGA board (Sipeed
+Tang Nano 20K, Gowin GW2AR-18).
 
 The model is the MLPerf Tiny Visual Wake Words model. It's a small MobileNet that looks at a
 96x96 color image and says "person" or "no person". Everything is built with the
@@ -17,7 +16,7 @@ open-source tools (Yosys, nextpnr, Verilator, cocotb), no vendor IDE.
 - the design passes timing at 64 MHz and runs at 54 MHz
 
 Everything passes in simulation, including the whole board with models of the flash and
-SDRAM. I'm testing it on the real board now ([docs/bringup.md](docs/bringup.md)).
+SDRAM. Testing on the real board is in progress ([docs/bringup.md](docs/bringup.md)).
 
 ## How it fits together
 
@@ -54,23 +53,20 @@ input by a weight and adds the result to a running sum, so the 64 units together
 starts the next job right away, while the saved sums are read out.
 
 **Depthwise layers.** For DWCONV the same array is used a bit differently. A job is 8
-neighbouring pixels in one row × 8 channels. My first idea was a line buffer that holds the
-input rows, but that took too much space. Instead each row of units takes its input straight
+neighbouring pixels in one row × 8 channels. Each row of units takes its input straight
 from memory as it's read, which works because the inputs already arrive staggered by one
-cycle per row.
+cycle per row, so no line buffer is needed.
 
 **Back to int8.** After a layer, the sums are much bigger than 8 bits and need to be scaled
 back down to int8 for the next layer. TensorFlow Lite does this with a specific integer multiply and
-rounding, and I copied it exactly, so my results match TFLite bit for bit. Two of these
+rounding, and the NPU does exactly the same, so the results match TFLite bit for bit. Two of these
 "requantizer" units run in parallel.
 
-**Fitting it in.** The FPGA only has about 20K LUTs, so the design had to be small, and
-this is where I learned the most. Address calculations use counters and shifts instead of
-multipliers, and small tables go in LUT RAM. The thing that confused me for a while is that
-on this FPGA a flip-flop can only take its input from the LUT right next to it, so a register
-fed by another register uses up an extra LUT. The utilization report doesn't show those, so
-the design was actually bigger than the report said and wouldn't place. Now I try not to add
-extra register copies.
+**Fitting it in.** The FPGA only has about 20K LUTs, so the design has to be small.
+Address calculations use counters and shifts instead of multipliers, and small tables go in
+LUT RAM. On this FPGA a flip-flop can only take its input from the LUT right next to it, so
+a register fed by another register uses up an extra LUT. The utilization report doesn't show
+those, so the design avoids extra register copies.
 
 ## The compiler and simulator
 
@@ -82,8 +78,8 @@ need TensorFlow installed.
 laid out, where each feature map goes in memory, and which rounding each layer needs.
 
 `sw/npu/sim.py` is a simulator written in Python. It does the same integer math as the
-hardware and also predicts how many clock cycles each instruction takes. I wrote it before
-the Verilog, and the testbenches check the RTL against it, which caught a lot of my bugs.
+hardware and also predicts how many clock cycles each instruction takes. The testbenches
+check the RTL against it.
 
 ```bash
 cd sw && python -m npu.compiler ../models/ir/vww --out ../build/npu_vww
@@ -101,7 +97,7 @@ cd sw && python -m npu.compiler ../models/ir/vww --out ../build/npu_vww
 | FPGA usage | LUT4 77%, DFF 55%, BSRAM 45/46, 64 DSP multipliers |
 | Max clock after routing | 64.4 MHz for the NPU (runs at 54 MHz), 83.5 MHz for HDMI (runs at 25.2 MHz) |
 
-The first version took 705k cycles per image. I got it down to 243k by overlapping work
+The first version took 705k cycles per image. It got down to 243k by overlapping work
 that used to happen one step at a time (loading weights, reading out results, starting the
 next job), adding the depthwise mode, and packing the RGB pixels of the first layer together.
 

@@ -1,13 +1,3 @@
-"""cocotb: sw/board/board_check.py against the simulated board ("virtual board").
-
-The host script runs unmodified as a subprocess on a pseudo-terminal; cocotb bridges the
-terminal to the design's UART pins. Two cases:
-  * bring-up design (bringup_tb_top) with the MNIST model in flash:
-        board_check.py --port <pty> --model models/ir/mnist         -> all checks pass
-  * NPU system (npu_system_tb_top) booted from flash with the MNIST model:
-        board_check.py --port <pty> --npu --model models/ir/mnist   -> board == simulator
-"""
-
 import os
 import subprocess
 import sys
@@ -25,9 +15,8 @@ sys.path.insert(0, str(ROOT / "tb"))
 from npu.board import BOOT_W, boot_words, flash_words  # noqa: E402
 from npu.compiler import compile_ir, load_ir  # noqa: E402
 
-BIT = 8                                    # UART clocks per bit in both testbench tops
+BIT = 8
 MODEL = ROOT / "models" / "ir" / "mnist"
-
 
 async def load_flash(dut, words, base):
     await FallingEdge(dut.clk)
@@ -37,7 +26,6 @@ async def load_flash(dut, words, base):
         dut.load_data.value = int(w)
         await FallingEdge(dut.clk)
     dut.load_we.value = 0
-
 
 async def uart_to_pty(dut, fd):
     while True:
@@ -49,9 +37,7 @@ async def uart_to_pty(dut, fd):
             await ClockCycles(dut.clk, BIT)
         os.write(fd, bytes([v]))
 
-
 async def run_host(dut, args):
-    """Run board_check.py on a pty bridged to the UART; returns (exit code, output)."""
     master, slave = os.openpty()
     tty.setraw(master)
     os.set_blocking(master, False)
@@ -77,11 +63,9 @@ async def run_host(dut, args):
         dut._log.info("host: " + line)
     return proc.returncode, out
 
-
 def _mnist_flash():
     prog = compile_ir(*load_ir(MODEL))
     return prog, flash_words(prog, np.zeros((28, 28, 1), np.uint8))
-
 
 @cocotb.test()
 async def board_check(dut):
@@ -104,23 +88,21 @@ async def board_check(dut):
     dut.rst.value = 0
 
     if top == "bringup_tb_top":
-        await ClockCycles(dut.clk, 20_000)             # banner and SDRAM calibration
+        await ClockCycles(dut.clk, 20_000)
         code, out = await run_host(dut, ["--model", str(MODEL)])
         assert code == 0 and "all checks passed" in out, out
         for name in ("UART", "SDRAM calibration", "SDRAM test", "flash read", "flash holds"):
             assert f"[PASS] {name}" in out, (name, out)
     else:
-        while not int(dut.res_valid.value):           # boot: copy, program, demo image, run
+        while not int(dut.res_valid.value):
             await ClockCycles(dut.clk, 10_000)
         code, out = await run_host(dut, ["--npu", "--model", str(MODEL), "--images", "2"])
         assert code == 0 and out.count("[PASS] inference") == 2, out
-
 
 def test_board_check_bringup():
     from sim import run
     from test_bringup import SOURCES
     run("bringup_tb_top", SOURCES, "test_board_check", extra_env={"BOARD_CHECK_TOP": "bringup_tb_top"})
-
 
 def test_board_check_npu():
     from sim import run

@@ -1,5 +1,3 @@
-"""cocotb tests for the portable video blocks: tmds_encoder, video_timing."""
-
 import random
 
 import cocotb
@@ -8,7 +6,6 @@ from cocotb.triggers import FallingEdge, RisingEdge
 
 from models.tmds import TmdsEncoder, tmds_decode
 
-
 async def reset(dut, cycles=3):
     dut.rst.value = 1
     for _ in range(cycles):
@@ -16,11 +13,7 @@ async def reset(dut, cycles=3):
     await FallingEdge(dut.clk)
     dut.rst.value = 0
 
-
-# ---------------------------------------------------------------- tmds_encoder
-
 def _stimulus(n, rng):
-    """Mix of video runs and blanking runs, plus corner-case bytes."""
     corners = [0x00, 0xFF, 0x0F, 0xF0, 0x55, 0xAA, 0x01, 0x80, 0x10, 0xEF]
     out = []
     while len(out) < n:
@@ -35,10 +28,8 @@ def _stimulus(n, rng):
             out.extend([(0, rng.randrange(256), c0, c1)] * run)
     return out[:n]
 
-
 @cocotb.test()
 async def tmds_matches_reference(dut):
-    """RTL output equals the spec model bit-for-bit; decodes back; disparity stays bounded."""
     if not hasattr(dut, "de"):
         return
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
@@ -52,7 +43,7 @@ async def tmds_matches_reference(dut):
         dut.de.value, dut.d.value, dut.c0.value, dut.c1.value = de, d, c0, c1
         expected = ref.encode(de, d, c0, c1)
         max_disp = max(max_disp, abs(ref.cnt))
-        await FallingEdge(dut.clk)  # inputs sampled on the rising edge in between
+        await FallingEdge(dut.clk)
         got = int(dut.q.value)
         assert got == expected, f"cycle {i}: de={de} d={d:#04x} got {got:010b} exp {expected:010b}"
 
@@ -65,19 +56,14 @@ async def tmds_matches_reference(dut):
     assert max_disp <= 10, f"running disparity reached {max_disp}"
     dut._log.info(f"20000 symbols match; max |disparity| = {max_disp}")
 
-
-# ---------------------------------------------------------------- video_timing
-
 @cocotb.test()
 async def timing_640x480(dut):
-    """One full frame: active area, sync widths/counts, frame_start pulse."""
     if not hasattr(dut, "frame_start"):
         return
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     await reset(dut)
 
     H_TOTAL, V_TOTAL = 800, 525
-    # Align to the first frame_start
     while not int(dut.frame_start.value):
         await FallingEdge(dut.clk)
 
@@ -104,13 +90,9 @@ async def timing_640x480(dut):
     assert frames == 1, frames
     assert int(dut.frame_start.value) == 1, "next frame_start should be exactly one frame later"
 
-
-# ---------------------------------------------------------------- pytest entry points
-
 def test_tmds_encoder():
     from sim import run
     run("tmds_encoder", ["video/tmds_encoder.sv"], "test_video")
-
 
 def test_video_timing():
     from sim import run

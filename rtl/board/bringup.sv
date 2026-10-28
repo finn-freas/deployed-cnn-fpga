@@ -1,18 +1,3 @@
-// bringup: board bring-up tests for the Tang Nano 20K, driven over the UART.
-//
-// Checks, one at a time, the parts the person detector depends on, with the same
-// controllers, parameters and pins as npu_board_top:
-//   * at reset: a banner, then the SDRAM's initialisation and read-latency calibration
-//   * 'p'  ping                            -> "pong"
-//   * 's'  the SDRAM status line again
-//   * 'm'  SDRAM: writes MEM_WORDS 64-bit words (the region the NPU uses) and reads them
-//          back as streamed bursts, twice with inverted patterns; first error reported
-//   * 'f'  flash: reads the model image header at BOOT_W and sums the weights/params image
-//          (sum of all 32-bit halves, mod 2^32); sw/board/board_check.py compares it
-//   * 'a'  (or the `run_all` pulse): m then f
-// Replies are text lines (any terminal at 1 Mbaud works). `status`: {fail, pass, cal_err,
-// sdram ready, busy} for the LEDs.
-
 `default_nettype none
 
 module bringup #(
@@ -29,12 +14,10 @@ module bringup #(
     input  wire logic        uart_rx,
     output      logic        uart_tx,
     output      logic [4:0]  status,
-    // configuration flash (used as I/O after configuration)
     output      logic        spi_cs_n,
     output      logic        spi_clk,
     output      logic        spi_mosi,
     input  wire logic        spi_miso,
-    // SDRAM pins
     output      logic        sd_cke,
     output      logic        sd_cs_n,
     output      logic        sd_ras_n,
@@ -47,24 +30,22 @@ module bringup #(
     output      logic        sd_dq_oe,
     input  wire logic [31:0] sd_dq_i
 );
-    localparam int RD_CHUNK = 4096;                 // words per streamed read request
-    localparam int MSGW     = 8 * 96;               // longest reply
+    localparam int RD_CHUNK = 4096;
+    localparam int MSGW     = 8 * 96;
 
-    // ---------------------------------------------------------------- UART
     localparam int DIV = (CLK_HZ + BAUD / 2) / BAUD;
     logic       rx_v, tx_v, tx_rdy;
     logic [7:0] rx_d, tx_d;
     uart_rx #(.DIV(DIV)) u_rx (.clk, .rst, .rx(uart_rx), .valid(rx_v), .data(rx_d));
     uart_tx #(.DIV(DIV)) u_tx (.clk, .rst, .valid(tx_v), .data(tx_d), .ready(tx_rdy), .tx(uart_tx));
 
-    // text replies: the message is left-aligned in `msg` and shifted out byte by byte
     logic [MSGW-1:0] msg;
     logic [6:0]      msg_len;
     assign tx_v = (msg_len != 0);
     assign tx_d = msg[MSGW-1 -: 8];
 
     function automatic logic [7:0] hd(input logic [3:0] n);
-        return (n < 4'd10) ? 8'h30 + 8'(n) : 8'h57 + 8'(n);        // 0-9, a-f
+        return (n < 4'd10) ? 8'h30 + 8'(n) : 8'h57 + 8'(n);
     endfunction
     function automatic logic [39:0] hex5(input logic [19:0] v);
         for (int i = 0; i < 5; i++) hex5[8 * i +: 8] = hd(v[4 * i +: 4]);
@@ -77,7 +58,6 @@ module bringup #(
     endfunction
     `define SAY(X) begin msg <= {X, {(MSGW - $bits(X)){1'b0}}}; msg_len <= 7'($bits(X) / 8); end
 
-    // ---------------------------------------------------------------- SDRAM
     logic        sd_ready, cal_err, sd_idle, rd_req, rd_ack, rvalid, wr_req, wr_ack;
     logic [1:0]  cal_rl;
     logic [16:0] rd_addr, wr_addr;
@@ -90,8 +70,6 @@ module bringup #(
         .sd_cke, .sd_cs_n, .sd_ras_n, .sd_cas_n, .sd_we_n, .sd_ba, .sd_addr, .sd_dqm,
         .sd_dq_o, .sd_dq_oe, .sd_dq_i);
 
-    // test pattern: an invertible scramble of the address in both halves (every data bit
-    // toggles across addresses), inverted on the second pass
     function automatic logic [63:0] pat(input logic [16:0] a, input logic inv);
         logic [31:0] x;
         x = 32'(a);
@@ -101,7 +79,6 @@ module bringup #(
         return {x ^ 32'hC3A5_5A3C, ~x} ^ {64{inv}};
     endfunction
 
-    // ---------------------------------------------------------------- flash
     logic        f_req, f_ack, f_rvalid;
     logic [16:0] f_addr;
     logic [15:0] f_len;
@@ -111,21 +88,20 @@ module bringup #(
         .rvalid(f_rvalid), .rdata(f_rdata),
         .spi_cs_n, .spi_clk, .spi_mosi, .spi_miso);
 
-    // ---------------------------------------------------------------- tests
     typedef enum logic [3:0] {
         T_BANNER, T_SDWAIT, T_IDLE, T_MW, T_MR, T_MDONE, T_FHDR, T_FSUM, T_FBAD, T_FDONE
     } tstate_e;
     tstate_e     ts;
-    logic        seq;               // 'a': flash test after the memory test
-    logic        pass_n;            // memory test pass (0, 1)
-    logic [16:0] ma, mr;            // write address; read: next word expected
-    logic [16:0] mreq;              // read: next chunk to request
+    logic        seq;
+    logic        pass_n;
+    logic [16:0] ma, mr;
+    logic [16:0] mreq;
     logic [31:0] errs;
     logic [16:0] e_addr;
     logic [63:0] e_got, e_exp;
     logic        f_hdr_seen;
     logic [63:0] f_hdr;
-    logic [16:0] f_n, f_i, f_next;  // image words, words summed, next to request
+    logic [16:0] f_n, f_i, f_next;
     logic [31:0] f_sum;
     logic        ok_flag, bad_flag;
     logic [24:0] sd_timeout;
@@ -155,7 +131,6 @@ module bringup #(
                     ts <= T_SDWAIT;
                 end
 
-                // SDRAM initialisation and calibration take well under a millisecond
                 T_SDWAIT: if (msg_len == 0) begin
                     sd_timeout <= sd_timeout + 25'd1;
                     if (cal_err) begin
@@ -208,7 +183,6 @@ module bringup #(
                     end
                 end
 
-                // ---- SDRAM: write every word ...
                 T_MW: begin
                     if (wr_req && wr_ack) begin
                         wr_req <= 1'b0;
@@ -218,14 +192,13 @@ module bringup #(
                             mreq <= '0;
                             ts   <= T_MR;
                         end
-                    end else if (!wr_req && sd_idle) begin     // the last write has finished
+                    end else if (!wr_req && sd_idle) begin
                         wr_req  <= 1'b1;
                         wr_addr <= ma;
                         wr_data <= pat(ma, pass_n);
                     end
                 end
 
-                // ... then read it back in streamed chunks
                 T_MR: begin
                     if (rd_req && rd_ack) rd_req <= 1'b0;
                     else if (!rd_req && mreq == mr && 32'(mreq) < 32'(MEM_WORDS)) begin
@@ -276,7 +249,6 @@ module bringup #(
                     end
                 end
 
-                // ---- flash: the boot header (word 0: magic, word 1: image length) ...
                 T_FHDR: begin
                     if (f_req && f_ack) f_req <= 1'b0;
                     if (f_rvalid) begin
@@ -295,7 +267,6 @@ module bringup #(
                     end
                 end
 
-                // ... and the sum of the weights/params image
                 T_FSUM: begin
                     if (f_req && f_ack) f_req <= 1'b0;
                     else if (!f_req && f_next == f_i && f_next < f_n) begin

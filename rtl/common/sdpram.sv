@@ -1,6 +1,3 @@
-// sdpram: simple dual-port RAM, one write port, one synchronous read port (1-cycle latency).
-// Infers block RAM. Read-during-write to the same address returns the old data.
-
 `default_nettype none
 
 module sdpram #(

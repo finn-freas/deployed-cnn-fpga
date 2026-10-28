@@ -1,15 +1,10 @@
-// Sipeed Tang Nano 20K (GW2AR-LV18QN88C8/I7)
-// Pin numbers cross-checked against YosysHQ/apicula examples/tangnano20k.cst.
-
 IO_LOC  "clk_27" 4;
 IO_PORT "clk_27" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
 CLOCK_LOC "clk_27" BUFG;
 
-// Buttons (active-high when pressed)
 IO_LOC  "btn_s1" 88;
 IO_PORT "btn_s1" IO_TYPE=LVCMOS33;
 
-// LEDs (active-low)
 IO_LOC  "led_n[0]" 15;
 IO_PORT "led_n[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
 IO_LOC  "led_n[1]" 16;
@@ -23,7 +18,6 @@ IO_PORT "led_n[4]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
 IO_LOC  "led_n[5]" 20;
 IO_PORT "led_n[5]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
 
-// HDMI (DVI), true LVDS
 IO_LOC  "tmds_clk_p" 33;
 IO_PORT "tmds_clk_p" IO_TYPE=LVDS25 PULL_MODE=NONE;
 IO_LOC  "tmds_clk_n" 34;
@@ -41,17 +35,14 @@ IO_PORT "tmds_d_p[2]" IO_TYPE=LVDS25 PULL_MODE=NONE;
 IO_LOC  "tmds_d_n[2]" 40;
 IO_PORT "tmds_d_n[2]" IO_TYPE=LVDS25 PULL_MODE=NONE;
 
-// Button S2 (active-high when pressed)
 IO_LOC  "btn_s2" 87;
 IO_PORT "btn_s2" IO_TYPE=LVCMOS33;
 
-// USB-UART (BL616 bridge)
 IO_LOC  "uart_tx" 69;
 IO_PORT "uart_tx" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
 IO_LOC  "uart_rx" 70;
 IO_PORT "uart_rx" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 
-// Configuration SPI flash, used as I/O after configuration (gowin_pack --mspi_as_gpio)
 IO_LOC  "flash_cs_n" 60;
 IO_PORT "flash_cs_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC  "flash_clk" 59;
@@ -61,8 +52,6 @@ IO_PORT "flash_mosi" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
 IO_LOC  "flash_miso" 62;
 IO_PORT "flash_miso" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 
-// In-package SDRAM (GW2AR-18), placed by IO name; banks 2 and 7 at 3.3 V.
-// Locations from YosysHQ/apicula doc/sdram.md (as used by pat-gc/testing-ram-on-tang-nano-20k-oss).
 IO_LOC "O_sdram_clk" IOR11B;
 IO_PORT "O_sdram_clk"  IO_TYPE=LVCMOS33 BANK_VCCIO=3.3;
 IO_LOC "O_sdram_cke" IOL13A;

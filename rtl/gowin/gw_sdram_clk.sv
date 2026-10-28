@@ -1,6 +1,3 @@
-// gw_sdram_clk: the SDRAM clock, 180 degrees from clk, through an output DDR register
-// (low after each rising edge, high after each falling edge). Synthesis only.
-
 `default_nettype none
 
 module gw_sdram_clk (

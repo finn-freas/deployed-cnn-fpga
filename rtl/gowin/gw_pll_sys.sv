@@ -1,6 +1,3 @@
-// gw_pll_sys: the NPU/SDRAM system clock, clk_27 -> rPLL -> 27 * 2 = 54 MHz
-// (VCO 864 MHz). Synthesis only.
-
 `default_nettype none
 
 module gw_pll_sys (
@@ -12,11 +9,11 @@ module gw_pll_sys (
     rPLL #(
         .FCLKIN          ("27"),
         .DYN_IDIV_SEL    ("false"),
-        .IDIV_SEL        (0),        // /1
+        .IDIV_SEL        (0),
         .DYN_FBDIV_SEL   ("false"),
-        .FBDIV_SEL       (1),        // x2
+        .FBDIV_SEL       (1),
         .DYN_ODIV_SEL    ("false"),
-        .ODIV_SEL        (16),       // VCO = 864 MHz
+        .ODIV_SEL        (16),
         .PSDA_SEL        ("0000"),
         .DYN_DA_EN       ("true"),
         .DUTYDA_SEL      ("1000"),

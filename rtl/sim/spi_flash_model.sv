@@ -1,26 +1,21 @@
-// spi_flash_model: behavioural 8 MiB SPI NOR flash, READ (0x03) only, SPI mode 0
-// (simulation). Contents are loaded 8 bytes at a time (little-endian) through a write
-// port. Samples MOSI on SCLK rising edges and changes MISO after falling edges.
-
 `default_nettype none
-/* verilator lint_off SYNCASYNCNET */   // CS# is both an async reset and a sampled level here
+/* verilator lint_off SYNCASYNCNET */
 
 module spi_flash_model (
     input  wire logic        cs_n,
     input  wire logic        sclk,
     input  wire logic        mosi,
     output      logic        miso,
-    // contents loading (independent clock)
     input  wire logic        load_clk,
     input  wire logic        load_we,
-    input  wire logic [22:0] load_addr,     // byte address, 8-aligned
+    input  wire logic [22:0] load_addr,
     input  wire logic [63:0] load_data
 );
 
     logic [7:0]  mem [1 << 23];
-    logic [5:0]  nbits;               // bits received since CS# fell (saturates at 32)
-    logic [31:0] cmd;                 // opcode + 24-bit address
-    logic        started;             // data phase running
+    logic [5:0]  nbits;
+    logic [31:0] cmd;
+    logic        started;
     logic [22:0] ptr;
     logic [2:0]  out_bit;
 
@@ -36,13 +31,12 @@ module spi_flash_model (
         end
     end
 
-    // after the 32nd rising edge, a data bit comes out after each falling edge
     always_ff @(negedge sclk or posedge cs_n) begin
         if (cs_n) begin
             miso    <= 1'b0;
             started <= 1'b0;
             out_bit <= 3'd7;
-        end else if (nbits == 6'd32 && cmd[31:24] == 8'h03) begin   // only READ is modelled
+        end else if (nbits == 6'd32 && cmd[31:24] == 8'h03) begin
             logic [22:0] a;
             a = started ? ptr : cmd[22:0];
             miso    <= mem[a][out_bit];

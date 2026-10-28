@@ -1,11 +1,3 @@
-"""Compile the exported IR into NPU memory images.
-
-    python -m npu.compiler build/model --out build/npu     (run from sw/)
-
-Outputs program.hex / weights.hex / params.hex for $readmemh, meta.json (memory map
-and per-layer tensor locations), and program.txt (disassembly).
-"""
-
 import argparse
 import json
 from dataclasses import dataclass, field
@@ -18,31 +10,24 @@ from .isa import N, Instr, Op
 from .quant import (INT32_MAX, INT32_MIN, RMODE_DOUBLE, RMODE_SINGLE, effective_scale,
                     quantize_multiplier)
 
-# TFLite reference-kernel rounding per op, measured against BUILTIN_REF (see quant.py).
 RMODE = {"conv": RMODE_DOUBLE, "fc": RMODE_SINGLE, "dwconv": RMODE_DOUBLE}
 RMODE_NAMES = {"double": RMODE_DOUBLE, "single": RMODE_SINGLE}
 
-
 def layer_rmode(L: dict, kind: str) -> int:
-    """The layer's own rounding (L["rmode"], set by front ends other than TFLite), else TFLite's."""
     return RMODE_NAMES[L["rmode"]] if "rmode" in L else RMODE[kind]
-
 
 def ceil_div(a, b):
     return -(-a // b)
 
-
 @dataclass
 class Program:
     instrs: list[Instr] = field(default_factory=list)
-    # External store image (flash/SDRAM): per layer, its weights then its params.
     ext: np.ndarray = field(default_factory=lambda: np.zeros((isa.EXT_DEPTH, N), np.int8))
     ext_used: int = 0
-    params: list[tuple[int, int, int]] = field(default_factory=list)   # (bias, mult, shift), for reports
+    params: list[tuple[int, int, int]] = field(default_factory=list)
     meta: dict = field(default_factory=dict)
 
     def ext_words(self) -> list[int]:
-        """External store contents as uint64 words (byte 0 = LSB)."""
         return np.frombuffer(self.ext[:self.ext_used].view(np.uint8).tobytes(), dtype="<u8").tolist()
 
     def write(self, out: Path):
@@ -67,7 +52,6 @@ class Program:
         return self._append(rows.astype(np.int8), what)
 
     def add_params(self, bias, w_sum, in_zp, scales, n_padded) -> int:
-        """Per-channel params; input zero point folded into the bias (padding = in_zp)."""
         params = []
         for o in range(n_padded):
             if o < len(bias):
@@ -79,7 +63,6 @@ class Program:
         return self.add_raw_params(params)
 
     def add_raw_params(self, params) -> int:
-        """(bias, mult, shift) per output channel, as given."""
         if len(params) > isa.PBUF_DEPTH:
             raise MemoryError(f"{len(params)} output channels exceed the param buffer")
         words = []
@@ -89,31 +72,23 @@ class Program:
         rows = np.frombuffer(np.array(words, dtype="<u8").tobytes(), dtype=np.int8).reshape(-1, N)
         return self._append(rows, "params")
 
-
 def avgpool_multiplier(n: int) -> tuple[int, int] | None:
-    """(mult, shift) such that single-rounding requant of a window sum equals TFLite's int8
-    AveragePool division (round half away from zero) for every reachable sum of n int8
-    values, or None. Single rounding is round-half-up, so this works when no sum is an exact
-    tie, i.e. for odd n; checked exhaustively."""
     if n < 2:
         return None
     mult, shift = quantize_multiplier(1.0 / n)
     if shift > 0:
         return None
     s = np.arange(-128 * n, 127 * n + 1, dtype=np.int64)
-    ref = np.where(s > 0, (s + n // 2) // n, -((-(s - n // 2)) // n))          # C division
+    ref = np.where(s > 0, (s + n // 2) // n, -((-(s - n // 2)) // n))
     total = 31 - shift
     got = (s * mult + (1 << (total - 1))) >> total
     return (mult, shift) if np.array_equal(got, ref) else None
-
 
 def check_single(prog: Program, rmode: int, n: int, name: str):
     if rmode == RMODE_SINGLE and any(s > 0 for _, _, s in prog.params[-n:]):
         raise NotImplementedError(f"{name}: single rounding needs scale < 1 (shift <= 0)")
 
-
 class ActAllocator:
-    """Ping-pong placement: each output goes at the opposite end of memory from its input."""
 
     def __init__(self, depth):
         self.depth = depth
@@ -121,13 +96,11 @@ class ActAllocator:
     def place(self, size, avoid):
         lo, hi = avoid
         room_below, room_above = lo, self.depth - hi
-        # Prefer the end with more free space, so consecutive layers alternate ends.
         for base, fits in sorted([(0, size <= room_below), (self.depth - size, size <= room_above)],
                                  key=lambda c: -(room_below if c[0] == 0 else room_above)):
             if fits:
                 return base
         raise MemoryError(f"activation memory: cannot place {size} words clear of [{lo},{hi})")
-
 
 def act_range(act: str, out_zp: int, out_scale: float):
     if act in ("none", ""):
@@ -138,12 +111,10 @@ def act_range(act: str, out_zp: int, out_scale: float):
         return max(-128, out_zp), min(127, out_zp + round(6.0 / out_scale))
     raise ValueError(act)
 
-
 def compile_ir(ir: dict, arrays: dict) -> Program:
     prog = Program()
     alloc = ActAllocator(isa.ACT_DEPTH)
     H, W, C = ir["input"]["shape"]
-    # The packed uint8 input (HWC bytes) sits at the bottom of activation memory.
     in_words = ceil_div(H * W * C, N)
     if in_words > isa.ACT_DEPTH:
         raise MemoryError("input does not fit activation memory")
@@ -156,8 +127,6 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
     arrays = dict(arrays)
     for L in ir["layers"]:
         if L["op"] == "dwconv" and L["kh"] == 1:
-            # 1x1 depthwise = 1x1 CONV with a diagonal weight matrix (the depthwise unit needs
-            # k >= 2: its first and last taps must be a kernel row apart)
             w = arrays[L["name"] + ".w"]
             wd = np.zeros((w.shape[0], 1, 1, w.shape[0]), w.dtype)
             wd[np.arange(w.shape[0]), 0, 0, np.arange(w.shape[0])] = w.reshape(-1)
@@ -171,7 +140,7 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
             raise NotImplementedError("the first layer must be a CONV (it reads the packed input)")
         out_g = ceil_div(oc, N)
         base = alloc.place(oh * ow * out_g, (cur["base"], cur["base"] + cur["words"]))
-        if "act_min" in L:              # explicit clamp (e.g. ONNX Clip), in output codes
+        if "act_min" in L:
             amin, amax = L["act_min"], L["act_max"]
         else:
             amin, amax = act_range(L.get("act", "none"), L["out_zp"], L["out_scale"])
@@ -182,12 +151,10 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
         if L["op"] == "conv":
             k = L["kh"]
             assert L["kh"] == L["kw"], "square kernels only"
-            w = arrays[L["name"] + ".w"].astype(np.int64)          # [O, k, k, I]
+            w = arrays[L["name"] + ".w"].astype(np.int64)
             b = arrays[L["name"] + ".b"].astype(np.int64)
             w_scale = arrays[L["name"] + ".w_scale"]
             if from_input:
-                # Packed input: k index = ky*KR + kx*C + c, each kernel row padded to KR (a
-                # multiple of N) so every N-value chunk is one contiguous input-row window.
                 ins = Instr(Op.CONV, in_cb=C, in_src=1, ksize=k)
                 K, KR = ins.K, ins.packed_row_k
                 flat = np.zeros((out_g * N, k, KR), np.int64)
@@ -197,7 +164,6 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
                 cb = cur["cb"]
                 ins = Instr(Op.CONV, in_cb=cb, ksize=k)
                 K = ins.K
-                # Channel-blocked: k index = ((ky*k + kx)*Cb + cb)*8 + c_in.
                 wp = np.zeros((out_g * N, k, k, cb * N), np.int64)
                 wp[:w.shape[0], :, :, :w.shape[3]] = w
                 flat = wp.reshape(out_g * N, K)
@@ -217,12 +183,12 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
             assert out_g == cb
             if not 2 <= k <= 3 or L["stride"] not in (1, 2):
                 raise NotImplementedError(f"{L['name']}: the depthwise unit supports k 2..3, stride 1/2")
-            w = arrays[L["name"] + ".w"].astype(np.int64)          # [C, k, k]
+            w = arrays[L["name"] + ".w"].astype(np.int64)
             b = arrays[L["name"] + ".b"].astype(np.int64)
             w_scale = arrays[L["name"] + ".w_scale"]
             wp = np.zeros((cb * N, k * k), np.int64)
             wp[:w.shape[0]] = w.reshape(w.shape[0], -1)
-            rows = wp.reshape(cb, N, k * k).transpose(0, 2, 1).reshape(cb * k * k, N)  # [cb][tap] -> 8 ch
+            rows = wp.reshape(cb, N, k * k).transpose(0, 2, 1).reshape(cb * k * k, N)
             w_base = prog.add_weights(rows, L["name"])
             scales = [effective_scale(L["in_scale"], s, L["out_scale"]) for s in w_scale]
             p_base = prog.add_params(b, w.reshape(w.shape[0], -1).sum(1), L["in_zp"], scales, cb * N)
@@ -234,9 +200,6 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
             assert out_g == cur["cb"]
             prog.instrs.append(Instr(Op.MAXPOOL, in_cb=cur["cb"], ksize=L["k"], **common))
         elif L["op"] == "avgpool":
-            # Window sum, requantized by s_in / (n * s_out) around the zero points. TFLite
-            # (equal input/output quantization) needs a multiplier that reproduces its integer
-            # division exactly; L["approx"] (ONNX, float rounding) takes the nearest one.
             cb, k = cur["cb"], L["k"]
             n = k * k
             stride = 1 if oh == ow == 1 else L["stride"]
@@ -245,7 +208,7 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
             same_q = L["in_scale"] == L["out_scale"] and L["in_zp"] == L["out_zp"]
             mq = avgpool_multiplier(n) if same_q else None
             if mq is not None:
-                param, zin, zout = (0, *mq), 0, 0       # mean of the raw codes
+                param, zin, zout = (0, *mq), 0, 0
             elif L.get("approx"):
                 m, sh = quantize_multiplier(L["in_scale"] / (n * L["out_scale"]))
                 param, zin, zout = (-n * L["in_zp"], m, sh), 0, L["out_zp"]
@@ -255,13 +218,11 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
             rmode = RMODE_SINGLE if param[2] <= 0 else RMODE_DOUBLE
             common.update(stride=stride, pad=0, in_zp=zin, out_zp=zout)
             if 2 <= k <= 3 and stride in (1, 2):
-                # depthwise unit, uniform: one param entry and one channel block's weights
                 w_base = prog.add_weights(np.ones((n, N), np.int64), L["name"])
                 p_base = prog.add_raw_params([param])
                 prog.instrs.append(Instr(Op.DWCONV, in_cb=cb, ksize=k, w_base=w_base, p_base=p_base,
                                          rmode=rmode, uniform=1, **common))
             else:
-                # larger windows (global pooling): a CONV with an identity matrix per tap
                 ins = Instr(Op.CONV, in_cb=cb, ksize=k)
                 K = ins.K
                 if K > isa.K_MAX:
@@ -287,17 +248,15 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
     prog.instrs.append(Instr(Op.END))
     assert len(prog.instrs) <= isa.IMEM_DEPTH, "program too long"
     for ins in prog.instrs:
-        ins.encode()                    # every field fits the instruction format
+        ins.encode()
     prog.meta.update(ext_used=prog.ext_used, n_params=len(prog.params), n_instr=len(prog.instrs),
                      classes=cur["c"])
     return prog
-
 
 def load_ir(model_dir: Path):
     ir = json.loads((model_dir / "ir.json").read_text())
     arrays = dict(np.load(model_dir / "ir.npz"))
     return ir, arrays
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -309,7 +268,6 @@ def main():
     print((args.out / "program.txt").read_text(), end="")
     print(f"external store {prog.ext_used}/{isa.EXT_DEPTH} words ({prog.ext_used * 8 / 1024:.1f} KiB: "
           f"weights + {len(prog.params)} params), instrs {len(prog.instrs)}/{isa.IMEM_DEPTH} -> {args.out}")
-
 
 if __name__ == "__main__":
     main()
