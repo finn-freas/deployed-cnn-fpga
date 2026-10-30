@@ -78,8 +78,15 @@ def main():
           f"{len(prog.instrs)} instructions) for flash offset {FLASH_BASE:#x}; "
           f"bring-up flash check: header {words[BOOT_W]:016x}, sum {image_sum(prog.ext_words()):08x}")
     if args.program:
-        subprocess.run(["openFPGALoader", "-b", "tangnano20k", "--external-flash", "--verify", "-o",
-                        str(FLASH_BASE), str(args.out)], check=True)
+        try:
+            subprocess.run(["openFPGALoader", "-b", "tangnano20k", "--external-flash", "--verify", "-o",
+                            str(FLASH_BASE), str(args.out)], check=True)
+        except FileNotFoundError:
+            raise SystemExit("openFPGALoader is not installed or not on PATH; flash.bin was written, "
+                             "program it with openFPGALoader -b tangnano20k --external-flash "
+                             f"-o {FLASH_BASE:#x} {args.out}")
+        except subprocess.CalledProcessError as e:
+            raise SystemExit(f"openFPGALoader failed with exit code {e.returncode}")
 
 if __name__ == "__main__":
     main()

@@ -1,4 +1,5 @@
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "board"))
@@ -131,3 +132,18 @@ def test_load_image_rejects_a_wrongly_sized_npy(tmp_path):
     np.save(f, np.zeros(5, np.uint8))
     with pytest.raises(SystemExit, match="5 values, the model input 2x2x3 needs 12"):
         load_image(f, 2, 2, 3)
+
+def test_main_reports_a_missing_openfpgaloader(tmp_path, monkeypatch):
+    from npu import board
+
+    def missing(*a, **k):
+        raise FileNotFoundError("openFPGALoader")
+
+    monkeypatch.setattr(board.subprocess, "run", missing)
+    monkeypatch.setattr(board, "compile_ir", lambda *a: SimpleNamespace(
+        meta={"input": {"h": 1, "w": 1, "c": 1, "base": 0}}, instrs=[], ext_words=lambda: []))
+    monkeypatch.setattr(board, "load_ir", lambda d: ((), ()))
+    monkeypatch.setattr(sys, "argv", ["board", str(tmp_path), "--program", "--out", str(tmp_path / "f.bin")])
+    with pytest.raises(SystemExit, match="openFPGALoader is not installed"):
+        board.main()
+    assert (tmp_path / "f.bin").exists()
