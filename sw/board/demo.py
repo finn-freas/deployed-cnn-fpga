@@ -34,7 +34,10 @@ def main():
 
     import cv2
     import serial
-    port = serial.Serial(args.port, args.baud, timeout=2)
+    try:
+        port = serial.Serial(args.port, args.baud, timeout=2)
+    except serial.SerialException as e:
+        sys.exit(f"cannot open {args.port}: {e}")
 
     if args.images:
         for path in args.images:

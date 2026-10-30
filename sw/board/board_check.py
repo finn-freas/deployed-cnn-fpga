@@ -148,7 +148,11 @@ def main():
         import serial
     except ImportError:
         sys.exit("needs pyserial: pip install pyserial")
-    with serial.Serial(args.port, args.baud, timeout=0.05) as port:
+    try:
+        port = serial.Serial(args.port, args.baud, timeout=0.05)
+    except serial.SerialException as e:
+        sys.exit(f"cannot open {args.port}: {e}")
+    with port:
         if args.npu:
             if not args.model:
                 sys.exit("--npu needs --model (the model that is in the flash)")
