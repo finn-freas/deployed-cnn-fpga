@@ -119,3 +119,15 @@ def test_font_rom_is_in_sync_with_generator():
     for c, rows in GLYPHS.items():
         assert len(rows) == 7 and all(len(r) == 5 and set(r) <= {"#", "."} for r in rows), c
     assert all(ord(c) < 128 for c in GLYPHS)
+
+def test_load_image_rejects_a_missing_file(tmp_path):
+    from npu.board import load_image
+    with pytest.raises(SystemExit, match="no such image file"):
+        load_image(tmp_path / "gone.npy", 2, 2, 3)
+
+def test_load_image_rejects_a_wrongly_sized_npy(tmp_path):
+    from npu.board import load_image
+    f = tmp_path / "img.npy"
+    np.save(f, np.zeros(5, np.uint8))
+    with pytest.raises(SystemExit, match="5 values, the model input 2x2x3 needs 12"):
+        load_image(f, 2, 2, 3)

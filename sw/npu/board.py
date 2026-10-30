@@ -38,8 +38,13 @@ def image_sum(words) -> int:
     return sum((int(w) & 0xFFFFFFFF) + (int(w) >> 32) for w in words) & 0xFFFFFFFF
 
 def load_image(path: Path, h: int, w: int, c: int) -> np.ndarray:
+    if not Path(path).is_file():
+        raise SystemExit(f"{path}: no such image file")
     if path.suffix == ".npy":
-        return np.load(path).astype(np.uint8).reshape(h, w, c)
+        arr = np.load(path)
+        if arr.size != h * w * c:
+            raise SystemExit(f"{path}: {arr.size} values, the model input {h}x{w}x{c} needs {h * w * c}")
+        return arr.astype(np.uint8).reshape(h, w, c)
     from PIL import Image
     im = Image.open(path).convert("RGB" if c == 3 else "L").resize((w, h))
     return np.asarray(im, np.uint8).reshape(h, w, c)
