@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -221,3 +222,10 @@ def test_load_ir_names_the_missing_files(tmp_path):
     (tmp_path / "ir.json").write_text("{}")
     with pytest.raises(FileNotFoundError, match=r"missing ir\.npz"):
         load_ir(tmp_path)
+
+def test_cli_exits_with_a_message_for_a_directory_without_an_ir(tmp_path, monkeypatch):
+    from npu import board, compiler
+    for module, argv in ((compiler, ["compiler", str(tmp_path)]), (board, ["board", str(tmp_path)])):
+        monkeypatch.setattr(sys, "argv", argv)
+        with pytest.raises(SystemExit, match=r"missing ir\.json and ir\.npz"):
+            module.main()

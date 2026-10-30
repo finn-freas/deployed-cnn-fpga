@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from . import isa
-from .compiler import compile_ir, load_ir
+from .compiler import compile_ir, load_ir_or_exit
 from .isa import Op
 
 FLASH_BASE = 0x40_0000
@@ -60,7 +60,7 @@ def main():
     ap.add_argument("--pool", action="store_true",
                     help="the bitstream has the MAXPOOL unit (npu_board_top is built without it)")
     args = ap.parse_args()
-    prog = compile_ir(*load_ir(args.model_dir))
+    prog = compile_ir(*load_ir_or_exit(args.model_dir))
     if not args.pool and any(i.op == Op.MAXPOOL for i in prog.instrs):
         raise SystemExit("the model uses MAXPOOL, which this bitstream does not have (HAS_POOL=0)")
     m = prog.meta["input"]

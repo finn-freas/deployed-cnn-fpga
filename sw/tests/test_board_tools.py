@@ -142,7 +142,7 @@ def test_main_reports_a_missing_openfpgaloader(tmp_path, monkeypatch):
     monkeypatch.setattr(board.subprocess, "run", missing)
     monkeypatch.setattr(board, "compile_ir", lambda *a: SimpleNamespace(
         meta={"input": {"h": 1, "w": 1, "c": 1, "base": 0}}, instrs=[], ext_words=lambda: []))
-    monkeypatch.setattr(board, "load_ir", lambda d: ((), ()))
+    monkeypatch.setattr(board, "load_ir_or_exit", lambda d: ((), ()))
     monkeypatch.setattr(sys, "argv", ["board", str(tmp_path), "--program", "--out", str(tmp_path / "f.bin")])
     with pytest.raises(SystemExit, match="openFPGALoader is not installed"):
         board.main()

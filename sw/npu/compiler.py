@@ -262,12 +262,18 @@ def load_ir(model_dir: Path):
     arrays = dict(np.load(model_dir / "ir.npz"))
     return ir, arrays
 
+def load_ir_or_exit(model_dir: Path):
+    try:
+        return load_ir(model_dir)
+    except FileNotFoundError as e:
+        raise SystemExit(str(e))
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model_dir", type=Path)
     ap.add_argument("--out", type=Path, default=Path("build/npu"))
     args = ap.parse_args()
-    prog = compile_ir(*load_ir(args.model_dir))
+    prog = compile_ir(*load_ir_or_exit(args.model_dir))
     prog.write(args.out)
     print((args.out / "program.txt").read_text(), end="")
     print(f"external store {prog.ext_used}/{isa.EXT_DEPTH} words ({prog.ext_used * 8 / 1024:.1f} KiB: "
