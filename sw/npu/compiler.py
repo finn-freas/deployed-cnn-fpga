@@ -254,6 +254,10 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
     return prog
 
 def load_ir(model_dir: Path):
+    missing = [f for f in ("ir.json", "ir.npz") if not (model_dir / f).is_file()]
+    if missing:
+        raise FileNotFoundError(f"{model_dir}: missing {' and '.join(missing)} "
+                                f"(a model directory holds the exported ir.json and ir.npz)")
     ir = json.loads((model_dir / "ir.json").read_text())
     arrays = dict(np.load(model_dir / "ir.npz"))
     return ir, arrays

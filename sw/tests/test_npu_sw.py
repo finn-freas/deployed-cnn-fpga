@@ -214,3 +214,10 @@ def test_random_nets_are_seeded_and_run_in_the_simulator():
         cls, _ = NpuSim.from_program(prog).run(random_image(ir, seed))
         assert 0 <= cls < ir["layers"][-1]["out_shape"][2]
         assert ir["layers"][-1]["out_shape"][:2] == [1, 1]
+
+def test_load_ir_names_the_missing_files(tmp_path):
+    with pytest.raises(FileNotFoundError, match=r"missing ir\.json and ir\.npz"):
+        load_ir(tmp_path)
+    (tmp_path / "ir.json").write_text("{}")
+    with pytest.raises(FileNotFoundError, match=r"missing ir\.npz"):
+        load_ir(tmp_path)
