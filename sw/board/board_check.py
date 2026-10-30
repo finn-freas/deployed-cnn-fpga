@@ -138,7 +138,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", required=True, help="the board's serial port (COM5, /dev/ttyUSB1, ...)")
     ap.add_argument("--baud", type=int, default=1_000_000)
-    ap.add_argument("--model", type=Path, help="model IR directory (models/ir/vww, or an npuc output dir)")
+    ap.add_argument("--model", type=Path, help="model IR directory holding ir.json and ir.npz (e.g. models/ir/vww)")
     ap.add_argument("--npu", action="store_true", help="the NPU bitstream is loaded: run inferences")
     ap.add_argument("--images", type=int, default=5, help="--npu: random images to compare")
     ap.add_argument("--timeout", type=float, default=1.0, help="extra seconds to wait for replies")
