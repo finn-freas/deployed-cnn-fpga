@@ -8,7 +8,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from npu.board import boot_words, image_sum  # noqa: E402
-from npu.compiler import compile_ir, load_ir  # noqa: E402
+from npu.compiler import compile_or_exit, load_ir_or_exit  # noqa: E402
 
 NPU_HZ = 54_000_000
 FAILED = []
@@ -57,7 +57,7 @@ def dq_lines(got: int, exp: int) -> str:
     return ", ".join(f"DQ{n}" for n in lines)
 
 def expected_flash(model_dir: Path):
-    prog = compile_ir(*load_ir(model_dir))
+    prog = compile_or_exit(*load_ir_or_exit(model_dir))
     m = prog.meta["input"]
     header = boot_words(prog, np.zeros((m["h"], m["w"], m["c"]), np.uint8))[0]
     ext = prog.ext_words()
@@ -107,7 +107,7 @@ def check_bringup(port, model_dir, extra=0.0):
 
 def check_npu(port, model_dir, n_images, extra_timeout, seed=0):
     from npu.sim import NpuSim
-    prog = compile_ir(*load_ir(model_dir))
+    prog = compile_or_exit(*load_ir_or_exit(model_dir))
     m = prog.meta["input"]
     rng = np.random.default_rng(seed)
     times = []
@@ -143,6 +143,8 @@ def main():
     ap.add_argument("--images", type=int, default=5, help="--npu: random images to compare")
     ap.add_argument("--timeout", type=float, default=1.0, help="extra seconds to wait for replies")
     args = ap.parse_args()
+    if args.images < 1:
+        ap.error("--images must be at least 1")
 
     try:
         import serial

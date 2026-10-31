@@ -147,3 +147,15 @@ def test_main_reports_a_missing_openfpgaloader(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="openFPGALoader is not installed"):
         board.main()
     assert (tmp_path / "f.bin").exists()
+
+def test_board_check_exits_for_a_model_directory_without_an_ir(tmp_path):
+    from board_check import expected_flash
+    with pytest.raises(SystemExit, match=r"missing ir\.json and ir\.npz"):
+        expected_flash(tmp_path)
+
+def test_board_check_rejects_a_non_positive_image_count(monkeypatch):
+    import board_check
+    monkeypatch.setattr(sys, "argv", ["board_check", "--port", "X", "--npu", "--images", "0"])
+    with pytest.raises(SystemExit) as e:
+        board_check.main()
+    assert e.value.code == 2
