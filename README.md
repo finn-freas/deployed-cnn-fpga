@@ -118,6 +118,17 @@ At power-up the board copies the weights from flash into SDRAM and classifies th
 image. After that, any image sent over the UART (1 Mbaud) gets classified. The HDMI output
 shows the image, the verdict, the score, and latency.
 
+## Command-line tools
+
+| Command | Options |
+|-|-|
+| `python -m npu.compiler MODEL_DIR` | `--out DIR` (default `build/npu`) writes the program, the weight image and the disassembly, and prints the memory use |
+| `python -m npu.board MODEL_DIR` | `--image FILE` demo image (png, jpg or npy; default is the model's first golden image, else mid-grey), `--out FILE` (default `build/board/flash.bin`), `--program` writes it to the board's flash with openFPGALoader, `--pool` for a bitstream that has the MAXPOOL unit |
+| `python sw/board/board_check.py --port PORT` | `--model DIR` also checks the flash contents, `--npu` runs inferences and compares them with the simulator, `--images N` (default 5), `--baud` (default 1000000), `--timeout SECONDS` |
+| `python sw/board/demo.py --port PORT [IMAGE ...]` | classifies the given image files, or the webcam (`--camera N`, default 0) if there are none; `q` quits |
+
+`MODEL_DIR` is a directory with `ir.json` and `ir.npz`, such as `models/ir/vww`.
+
 ## Building and testing
 
 ```bash
