@@ -283,8 +283,12 @@ def main():
                     help="input image (png/jpg/npy); default: golden image 0 if the model directory "
                          "has golden.npz, else mid-grey")
     ap.add_argument("--mhz", type=float, default=54.0, help="clock for the latency figure (default 54)")
+    ap.add_argument("--accuracy", type=int, metavar="N",
+                    help="also classify the first N images of golden.npz and report the accuracy against its labels")
     ap.add_argument("--layers", action="store_true", help="print cycles and MACs for every instruction")
     args = ap.parse_args()
+    if args.accuracy is not None and args.accuracy < 1:
+        ap.error("--accuracy must be at least 1")
     prog = compile_or_exit(*load_ir_or_exit(args.model_dir))
     m = prog.meta["input"]
     if args.image:
@@ -306,6 +310,15 @@ def main():
     print(f"class {cls}, score {score:+d}")
     print(f"{total} cycles, {total / (args.mhz * 1000):.3f} ms at {args.mhz:g} MHz, "
           f"{sum(sim.stats.macs)} MACs over {n} instructions")
+    if args.accuracy:
+        try:
+            gold = np.load(args.model_dir / "golden.npz")
+            images, labels = gold["images"], gold["labels"]
+        except (OSError, ValueError, KeyError) as e:
+            raise SystemExit(f"{args.model_dir / 'golden.npz'}: cannot read images and labels: {e}")
+        count = min(args.accuracy, len(labels), len(images))
+        correct = sum(sim.run(images[i])[0] == int(labels[i]) for i in range(count))
+        print(f"accuracy {correct / count:.4f} ({correct}/{count} golden images)")
 
 if __name__ == "__main__":
     main()

@@ -269,3 +269,21 @@ def test_sim_command_line_reports_cycles_and_layers(tmp_path, monkeypatch, capsy
     assert f"class {cls}, score {score:+d}" in out
     assert f"{total} cycles" in out
     assert out.count("\n") == len(s.stats.cycles) + 3
+
+def test_sim_command_line_accuracy_against_golden_labels(tmp_path, monkeypatch, capsys):
+    from npu import sim as sim_mod
+    from npu.randnet import random_image, random_ir
+    ir, arrays = random_ir(2)
+    (tmp_path / "ir.json").write_text(json.dumps(ir))
+    np.savez(tmp_path / "ir.npz", **arrays)
+    images = np.stack([random_image(ir, i) for i in range(4)])
+    s = NpuSim.from_program(compile_ir(ir, arrays))
+    labels = np.array([s.run(images[i])[0] for i in range(4)])
+    labels[3] += 1
+    np.savez(tmp_path / "golden.npz", images=images, labels=labels)
+    monkeypatch.setattr(sys, "argv", ["sim", str(tmp_path), "--accuracy", "10"])
+    sim_mod.main()
+    assert "accuracy 0.7500 (3/4 golden images)" in capsys.readouterr().out
+    monkeypatch.setattr(sys, "argv", ["sim", str(tmp_path), "--accuracy", "0"])
+    with pytest.raises(SystemExit):
+        sim_mod.main()
