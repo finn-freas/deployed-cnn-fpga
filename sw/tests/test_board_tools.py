@@ -201,3 +201,21 @@ def test_demo_reports_a_missing_dependency(monkeypatch):
     import demo
     with pytest.raises(SystemExit, match="needs opencv-python and pyserial"):
         demo.main()
+
+def test_load_golden_image_reads_the_first_image(tmp_path):
+    from npu.board import load_golden_image
+    f = tmp_path / "golden.npz"
+    np.savez(f, images=np.arange(24, dtype=np.uint8).reshape(2, 2, 2, 3))
+    out = load_golden_image(f, 2, 2, 3)
+    assert out.shape == (2, 2, 3)
+    assert out.ravel().tolist() == list(range(12))
+
+def test_load_golden_image_rejects_a_missing_key_and_a_wrong_size(tmp_path):
+    from npu.board import load_golden_image
+    f = tmp_path / "golden.npz"
+    np.savez(f, labels=np.zeros(2))
+    with pytest.raises(SystemExit, match="golden.npz"):
+        load_golden_image(f, 2, 2, 3)
+    np.savez(f, images=np.zeros((2, 5), np.uint8))
+    with pytest.raises(SystemExit, match="needs 12"):
+        load_golden_image(f, 2, 2, 3)

@@ -51,6 +51,15 @@ def load_image(path: Path, h: int, w: int, c: int) -> np.ndarray:
     im = Image.open(path).convert("RGB" if c == 3 else "L").resize((w, h))
     return np.asarray(im, np.uint8).reshape(h, w, c)
 
+def load_golden_image(path, h, w, c):
+    try:
+        img = np.load(path)["images"][0]
+    except (OSError, ValueError, KeyError, IndexError) as e:
+        raise SystemExit(f"{path}: cannot read the first golden image: {e}")
+    if img.size != h * w * c:
+        raise SystemExit(f"{path}: the golden image has {img.size} values, the model input {h}x{w}x{c} needs {h * w * c}")
+    return img.reshape(h, w, c)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model_dir", type=Path)
@@ -69,7 +78,7 @@ def main():
     if args.image:
         img = load_image(args.image, m["h"], m["w"], m["c"])
     elif (args.model_dir / "golden.npz").exists():
-        img = np.load(args.model_dir / "golden.npz")["images"][0]
+        img = load_golden_image(args.model_dir / "golden.npz", m["h"], m["w"], m["c"])
     else:
         print("no --image and no golden.npz: the demo image is mid-grey")
         img = np.full((m["h"], m["w"], m["c"]), 128, np.uint8)
