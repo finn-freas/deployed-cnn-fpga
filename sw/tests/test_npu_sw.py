@@ -251,3 +251,21 @@ def test_cli_exits_with_a_message_for_a_model_that_does_not_compile(tmp_path, mo
     monkeypatch.setattr(sys, "argv", ["compiler", str(tmp_path)])
     with pytest.raises(SystemExit, match="cannot compile this model: external store overflow at conv1"):
         compiler.main()
+
+def test_sim_command_line_reports_cycles_and_layers(tmp_path, monkeypatch, capsys):
+    from npu import sim as sim_mod
+    from npu.randnet import random_image, random_ir
+    ir, arrays = random_ir(5)
+    (tmp_path / "ir.json").write_text(json.dumps(ir))
+    np.savez(tmp_path / "ir.npz", **arrays)
+    np.save(tmp_path / "img.npy", random_image(ir, 1))
+    prog = compile_ir(ir, arrays)
+    s = NpuSim.from_program(prog)
+    cls, score = s.run(random_image(ir, 1))
+    monkeypatch.setattr(sys, "argv", ["sim", str(tmp_path), "--image", str(tmp_path / "img.npy"), "--layers"])
+    sim_mod.main()
+    out = capsys.readouterr().out
+    total = sum(s.stats.cycles) + sim_mod.SEQ_PER_INSTR * len(prog.instrs)
+    assert f"class {cls}, score {score:+d}" in out
+    assert f"{total} cycles" in out
+    assert out.count("\n") == len(s.stats.cycles) + 3

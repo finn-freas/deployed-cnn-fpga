@@ -269,3 +269,43 @@ class NpuSim:
         self.result = (cls, int(v[cls]))
         self.stats.cycles.append(count + 3)
         self.stats.macs.append(0)
+
+def main():
+    import argparse
+    from pathlib import Path
+
+    from .board import load_golden_image, load_image
+    from .compiler import compile_or_exit, load_ir_or_exit
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("model_dir", type=Path)
+    ap.add_argument("--image", type=Path,
+                    help="input image (png/jpg/npy); default: golden image 0 if the model directory "
+                         "has golden.npz, else mid-grey")
+    ap.add_argument("--mhz", type=float, default=54.0, help="clock for the latency figure (default 54)")
+    ap.add_argument("--layers", action="store_true", help="print cycles and MACs for every instruction")
+    args = ap.parse_args()
+    prog = compile_or_exit(*load_ir_or_exit(args.model_dir))
+    m = prog.meta["input"]
+    if args.image:
+        img = load_image(args.image, m["h"], m["w"], m["c"])
+    elif (args.model_dir / "golden.npz").exists():
+        img = load_golden_image(args.model_dir / "golden.npz", m["h"], m["w"], m["c"])
+    else:
+        print("no --image and no golden.npz: the input is mid-grey")
+        img = np.full((m["h"], m["w"], m["c"]), 128, np.uint8)
+    sim = NpuSim.from_program(prog)
+    cls, score = sim.run(img)
+    n = len(prog.instrs)
+    names = {L["instr"]: L["name"] for L in prog.meta["layers"]}
+    if args.layers:
+        print(f"{'pc':>3} {'op':8s} {'layer':22s} {'cycles':>9} {'MACs':>11}")
+        for pc, (cyc, macs) in enumerate(zip(sim.stats.cycles, sim.stats.macs)):
+            print(f"{pc:3d} {prog.instrs[pc].op.name.lower():8s} {names.get(pc, ''):22s} {cyc:9d} {macs:11d}")
+    total = total_cycles(sim.stats, n)
+    print(f"class {cls}, score {score:+d}")
+    print(f"{total} cycles, {total / (args.mhz * 1000):.3f} ms at {args.mhz:g} MHz, "
+          f"{sum(sim.stats.macs)} MACs over {n} instructions")
+
+if __name__ == "__main__":
+    main()
