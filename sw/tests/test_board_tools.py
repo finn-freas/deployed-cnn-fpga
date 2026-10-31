@@ -148,6 +148,17 @@ def test_main_reports_a_missing_openfpgaloader(tmp_path, monkeypatch):
         board.main()
     assert (tmp_path / "f.bin").exists()
 
+def test_main_reports_an_unwritable_output_path(tmp_path, monkeypatch):
+    from npu import board
+    monkeypatch.setattr(board, "compile_or_exit", lambda *a: SimpleNamespace(
+        meta={"input": {"h": 1, "w": 1, "c": 1, "base": 0}}, instrs=[], ext_words=lambda: []))
+    monkeypatch.setattr(board, "load_ir_or_exit", lambda d: ((), ()))
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    monkeypatch.setattr(sys, "argv", ["board", str(tmp_path), "--out", str(blocker / "f.bin")])
+    with pytest.raises(SystemExit, match="cannot write the flash image"):
+        board.main()
+
 def test_board_check_exits_for_a_model_directory_without_an_ir(tmp_path):
     from board_check import expected_flash
     with pytest.raises(SystemExit, match=r"missing ir\.json and ir\.npz"):

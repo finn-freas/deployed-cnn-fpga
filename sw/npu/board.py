@@ -83,8 +83,11 @@ def main():
         print("no --image and no golden.npz: the demo image is mid-grey")
         img = np.full((m["h"], m["w"], m["c"]), 128, np.uint8)
     words = flash_words(prog, img)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_bytes(np.array(words, dtype="<u8").tobytes())
+    try:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_bytes(np.array(words, dtype="<u8").tobytes())
+    except OSError as e:
+        raise SystemExit(f"{args.out}: cannot write the flash image: {e.strerror or e}")
     print(f"{args.out}: {len(words) * 8 / 1024:.0f} KiB ({len(prog.ext_words())} external-store words, "
           f"{len(prog.instrs)} instructions) for flash offset {FLASH_BASE:#x}; "
           f"bring-up flash check: header {words[BOOT_W]:016x}, sum {image_sum(prog.ext_words()):08x}")
