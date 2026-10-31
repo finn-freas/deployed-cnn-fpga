@@ -289,6 +289,8 @@ def main():
     args = ap.parse_args()
     if args.accuracy is not None and args.accuracy < 1:
         ap.error("--accuracy must be at least 1")
+    if args.mhz <= 0:
+        ap.error("--mhz must be greater than 0")
     prog = compile_or_exit(*load_ir_or_exit(args.model_dir))
     m = prog.meta["input"]
     if args.image:

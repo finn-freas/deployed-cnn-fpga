@@ -287,3 +287,11 @@ def test_sim_command_line_accuracy_against_golden_labels(tmp_path, monkeypatch, 
     monkeypatch.setattr(sys, "argv", ["sim", str(tmp_path), "--accuracy", "0"])
     with pytest.raises(SystemExit):
         sim_mod.main()
+
+def test_sim_command_line_rejects_a_non_positive_clock(tmp_path, monkeypatch, capsys):
+    from npu import sim as sim_mod
+    monkeypatch.setattr(sys, "argv", ["sim", str(tmp_path), "--mhz", "0"])
+    with pytest.raises(SystemExit) as e:
+        sim_mod.main()
+    assert e.value.code == 2
+    assert "--mhz must be greater than 0" in capsys.readouterr().err
