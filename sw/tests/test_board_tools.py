@@ -172,3 +172,32 @@ def test_flash_words_rejects_an_oversized_external_store():
     prog = _fake_program(1, ext_len=board.BOOT_W + 1)
     with pytest.raises(SystemExit, match="more than the 65536 before the boot block"):
         board.flash_words(prog, np.zeros(6, np.uint8))
+
+def _run_demo(monkeypatch, argv, cam_open=True, reply=b""):
+    import demo
+
+    class Cam:
+        def isOpened(self):
+            return cam_open
+
+    class Port(EchoPort):
+        def __init__(self, *a, **k):
+            super().__init__(reply)
+
+    cv2 = SimpleNamespace(VideoCapture=lambda i: Cam(), imread=lambda p: None)
+    serial = SimpleNamespace(Serial=Port, SerialException=OSError)
+    monkeypatch.setitem(sys.modules, "cv2", cv2)
+    monkeypatch.setitem(sys.modules, "serial", serial)
+    monkeypatch.setattr(sys, "argv", ["demo.py", "--port", "X"] + argv)
+    demo.main()
+
+def test_demo_reports_a_camera_that_cannot_be_opened(monkeypatch):
+    with pytest.raises(SystemExit, match="cannot open camera 0"):
+        _run_demo(monkeypatch, [], cam_open=False)
+
+def test_demo_reports_a_missing_dependency(monkeypatch):
+    monkeypatch.setitem(sys.modules, "cv2", None)
+    monkeypatch.setattr(sys, "argv", ["demo.py", "--port", "X"])
+    import demo
+    with pytest.raises(SystemExit, match="needs opencv-python and pyserial"):
+        demo.main()

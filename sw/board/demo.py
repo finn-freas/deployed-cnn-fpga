@@ -32,8 +32,11 @@ def main():
     ap.add_argument("images", nargs="*")
     args = ap.parse_args()
 
-    import cv2
-    import serial
+    try:
+        import cv2
+        import serial
+    except ImportError as e:
+        sys.exit(f"needs opencv-python and pyserial: pip install opencv-python pyserial ({e})")
     try:
         port = serial.Serial(args.port, args.baud, timeout=2)
     except serial.SerialException as e:
@@ -45,18 +48,26 @@ def main():
             if img is None:
                 print(f"{path}: cannot read", file=sys.stderr)
                 continue
-            person, score, lat, rt = infer(port, to_input(img))
+            try:
+                person, score, lat, rt = infer(port, to_input(img))
+            except IOError as e:
+                sys.exit(f"{path}: {e}")
             print(f"{path}: {'PERSON' if person else 'no person'} (score {score:+d}), "
                   f"NPU {lat:.2f} ms, round trip {rt:.0f} ms")
         return
 
     cam = cv2.VideoCapture(args.camera)
+    if not cam.isOpened():
+        sys.exit(f"cannot open camera {args.camera}")
     print("q to quit")
     while True:
         ok, frame = cam.read()
         if not ok:
             break
-        person, score, lat, rt = infer(port, to_input(frame))
+        try:
+            person, score, lat, rt = infer(port, to_input(frame))
+        except IOError as e:
+            sys.exit(str(e))
         label = f"{'PERSON' if person else 'no person'} {score:+d}  NPU {lat:.1f} ms  ({1000 / rt:.1f} fps)"
         colour = (60, 220, 60) if person else (60, 60, 230)
         cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, colour, 2)
