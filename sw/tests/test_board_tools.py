@@ -159,3 +159,16 @@ def test_board_check_rejects_a_non_positive_image_count(monkeypatch):
     with pytest.raises(SystemExit) as e:
         board_check.main()
     assert e.value.code == 2
+
+def test_boot_words_rejects_an_input_the_header_cannot_describe():
+    from npu import board
+    with pytest.raises(SystemExit, match="does not fit the boot header"):
+        board.boot_words(_fake_program(1, w=128), np.zeros(128 * 2, np.uint8))
+    with pytest.raises(SystemExit, match="does not fit the boot header"):
+        board.boot_words(_fake_program(1, c=8), np.zeros(2 * 3 * 8, np.uint8))
+
+def test_flash_words_rejects_an_oversized_external_store():
+    from npu import board
+    prog = _fake_program(1, ext_len=board.BOOT_W + 1)
+    with pytest.raises(SystemExit, match="more than the 65536 before the boot block"):
+        board.flash_words(prog, np.zeros(6, np.uint8))

@@ -24,14 +24,16 @@ def boot_words(prog, image_u8: np.ndarray) -> list[int]:
     in_words = -(-flat.size // 8)
     buf = np.zeros(in_words * 8, np.uint8)
     buf[:flat.size] = flat
-    assert w < 128 and c < 8
+    if w >= 128 or c >= 8:
+        raise SystemExit(f"the model input {h}x{w}x{c} does not fit the boot header (width below 128, channels below 8)")
     header = (len(beat_list) | meta["base"] << 16 | in_words << 32 | w << 48 | c << 55 | MAGIC << 58)
     prog_words = [beat_list[i] | beat_list[i + 1] << 32 for i in range(0, len(beat_list), 2)]
     return [header, len(prog.ext_words())] + prog_words + np.frombuffer(buf.tobytes(), "<u8").tolist()
 
 def flash_words(prog, image_u8: np.ndarray) -> list[int]:
     ext = prog.ext_words()
-    assert len(ext) <= BOOT_W, "external store image overlaps the boot block"
+    if len(ext) > BOOT_W:
+        raise SystemExit(f"the external store image has {len(ext)} words, more than the {BOOT_W} before the boot block")
     return ext + [0] * (BOOT_W - len(ext)) + boot_words(prog, image_u8)
 
 def image_sum(words) -> int:
