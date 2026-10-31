@@ -229,3 +229,25 @@ def test_cli_exits_with_a_message_for_a_directory_without_an_ir(tmp_path, monkey
         monkeypatch.setattr(sys, "argv", argv)
         with pytest.raises(SystemExit, match=r"missing ir\.json and ir\.npz"):
             module.main()
+
+def test_cli_exits_with_a_message_for_an_unreadable_ir(tmp_path, monkeypatch):
+    from npu import compiler
+    (tmp_path / "ir.json").write_text("{not json")
+    (tmp_path / "ir.npz").write_bytes(b"")
+    monkeypatch.setattr(sys, "argv", ["compiler", str(tmp_path)])
+    with pytest.raises(SystemExit, match="cannot read the IR"):
+        compiler.main()
+    (tmp_path / "ir.json").write_text("{}")
+    (tmp_path / "ir.npz").write_bytes(b"not a zip archive")
+    with pytest.raises(SystemExit, match="cannot read the IR"):
+        compiler.main()
+
+def test_cli_exits_with_a_message_for_a_model_that_does_not_compile(tmp_path, monkeypatch):
+    from npu import compiler
+    def too_big(ir, arrays):
+        raise MemoryError("external store overflow at conv1")
+    monkeypatch.setattr(compiler, "load_ir_or_exit", lambda d: ((), ()))
+    monkeypatch.setattr(compiler, "compile_ir", too_big)
+    monkeypatch.setattr(sys, "argv", ["compiler", str(tmp_path)])
+    with pytest.raises(SystemExit, match="cannot compile this model: external store overflow at conv1"):
+        compiler.main()

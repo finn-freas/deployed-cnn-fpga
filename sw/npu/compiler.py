@@ -1,5 +1,6 @@
 import argparse
 import json
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -267,13 +268,21 @@ def load_ir_or_exit(model_dir: Path):
         return load_ir(model_dir)
     except FileNotFoundError as e:
         raise SystemExit(str(e))
+    except (ValueError, OSError, zipfile.BadZipFile) as e:
+        raise SystemExit(f"{model_dir}: cannot read the IR: {e}")
+
+def compile_or_exit(ir, arrays):
+    try:
+        return compile_ir(ir, arrays)
+    except (MemoryError, NotImplementedError) as e:
+        raise SystemExit(f"cannot compile this model: {e}")
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model_dir", type=Path)
     ap.add_argument("--out", type=Path, default=Path("build/npu"))
     args = ap.parse_args()
-    prog = compile_ir(*load_ir_or_exit(args.model_dir))
+    prog = compile_or_exit(*load_ir_or_exit(args.model_dir))
     prog.write(args.out)
     print((args.out / "program.txt").read_text(), end="")
     print(f"external store {prog.ext_used}/{isa.EXT_DEPTH} words ({prog.ext_used * 8 / 1024:.1f} KiB: "

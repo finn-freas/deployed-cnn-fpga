@@ -140,7 +140,7 @@ def test_main_reports_a_missing_openfpgaloader(tmp_path, monkeypatch):
         raise FileNotFoundError("openFPGALoader")
 
     monkeypatch.setattr(board.subprocess, "run", missing)
-    monkeypatch.setattr(board, "compile_ir", lambda *a: SimpleNamespace(
+    monkeypatch.setattr(board, "compile_or_exit", lambda *a: SimpleNamespace(
         meta={"input": {"h": 1, "w": 1, "c": 1, "base": 0}}, instrs=[], ext_words=lambda: []))
     monkeypatch.setattr(board, "load_ir_or_exit", lambda d: ((), ()))
     monkeypatch.setattr(sys, "argv", ["board", str(tmp_path), "--program", "--out", str(tmp_path / "f.bin")])
