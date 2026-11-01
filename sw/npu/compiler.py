@@ -135,7 +135,9 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
             L = dict(L, op="conv")
         ih, iw, ic = L["in_shape"]
         oh, ow, oc = L["out_shape"]
-        assert (ih, iw, ic) == (cur["h"], cur["w"], cur["c"]), f"{L['name']}: shape chain"
+        if (ih, iw, ic) != (cur["h"], cur["w"], cur["c"]):
+            raise ValueError(f"{L['name']}: input shape {ih}x{iw}x{ic} does not match the previous "
+                             f"layer's output {cur['h']}x{cur['w']}x{cur['c']}")
         from_input = cur["src"] == "input"
         if from_input and L["op"] != "conv":
             raise NotImplementedError("the first layer must be a CONV (it reads the packed input)")
@@ -151,7 +153,8 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
 
         if L["op"] == "conv":
             k = L["kh"]
-            assert L["kh"] == L["kw"], "square kernels only"
+            if L["kh"] != L["kw"]:
+                raise NotImplementedError(f"{L['name']}: only square kernels are supported, got {L['kh']}x{L['kw']}")
             w = arrays[L["name"] + ".w"].astype(np.int64)
             b = arrays[L["name"] + ".b"].astype(np.int64)
             w_scale = arrays[L["name"] + ".w_scale"]
@@ -168,7 +171,8 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
                 wp = np.zeros((out_g * N, k, k, cb * N), np.int64)
                 wp[:w.shape[0], :, :, :w.shape[3]] = w
                 flat = wp.reshape(out_g * N, K)
-            assert K <= isa.K_MAX, f"{L['name']}: K={K} > K_MAX"
+            if K > isa.K_MAX:
+                raise NotImplementedError(f"{L['name']}: K={K} exceeds K_MAX={isa.K_MAX}")
             rows = flat.reshape(out_g, N, K).transpose(0, 2, 1).reshape(out_g * K, N)
             w_base = prog.add_weights(rows, L["name"])
             scales = [effective_scale(L["in_scale"], s, L["out_scale"]) for s in w_scale]
@@ -244,10 +248,12 @@ def compile_ir(ir: dict, arrays: dict) -> Program:
         prog.meta["layers"].append({"name": L["name"], "op": L["op"], "instr": len(prog.instrs) - 1,
                                     **{k: cur[k] for k in ("base", "h", "w", "cb", "c")}})
 
-    assert cur["h"] == cur["w"] == 1
+    if cur["h"] != 1 or cur["w"] != 1:
+        raise NotImplementedError(f"the network must end in a 1x1 output, not {cur['h']}x{cur['w']}")
     prog.instrs.append(Instr(Op.ARGMAX, in_base=cur["base"], in_w=cur["c"], comment="class = argmax"))
     prog.instrs.append(Instr(Op.END))
-    assert len(prog.instrs) <= isa.IMEM_DEPTH, "program too long"
+    if len(prog.instrs) > isa.IMEM_DEPTH:
+        raise MemoryError(f"{len(prog.instrs)} instructions exceed the instruction memory ({isa.IMEM_DEPTH})")
     for ins in prog.instrs:
         ins.encode()
     prog.meta.update(ext_used=prog.ext_used, n_params=len(prog.params), n_instr=len(prog.instrs),
@@ -274,7 +280,7 @@ def load_ir_or_exit(model_dir: Path):
 def compile_or_exit(ir, arrays):
     try:
         return compile_ir(ir, arrays)
-    except (MemoryError, NotImplementedError) as e:
+    except (MemoryError, NotImplementedError, ValueError) as e:
         raise SystemExit(f"cannot compile this model: {e}")
 
 def main():

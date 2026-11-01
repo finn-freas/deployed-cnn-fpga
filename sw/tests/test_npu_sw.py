@@ -306,3 +306,36 @@ def test_sim_command_line_rejects_a_non_positive_clock(tmp_path, monkeypatch, ca
         sim_mod.main()
     assert e.value.code == 2
     assert "--mhz must be greater than 0" in capsys.readouterr().err
+
+def test_compile_rejects_malformed_or_oversized_networks_with_a_message():
+    import copy
+    from npu.randnet import random_ir
+    ir, arrays = random_ir(2)
+
+    bad = copy.deepcopy(ir)
+    bad["layers"][1]["in_shape"][2] += 1
+    with pytest.raises(ValueError, match="does not match the previous layer"):
+        compile_ir(bad, arrays)
+
+    bad = copy.deepcopy(ir)
+    bad["layers"] = bad["layers"][:1]
+    assert bad["layers"][0]["out_shape"][0] > 1
+    with pytest.raises(NotImplementedError, match="must end in a 1x1 output"):
+        compile_ir(bad, arrays)
+
+    bad = copy.deepcopy(ir)
+    bad["layers"][0]["kw"] = bad["layers"][0]["kh"] + 1
+    with pytest.raises(NotImplementedError, match="only square kernels"):
+        compile_ir(bad, arrays)
+
+def test_cli_exits_with_a_message_for_a_malformed_network(tmp_path, monkeypatch):
+    import copy
+    from npu import compiler
+    from npu.randnet import random_ir
+    ir, arrays = random_ir(2)
+    ir = copy.deepcopy(ir)
+    ir["layers"] = ir["layers"][:1]
+    monkeypatch.setattr(compiler, "load_ir_or_exit", lambda d: (ir, arrays))
+    monkeypatch.setattr(sys, "argv", ["compiler", str(tmp_path)])
+    with pytest.raises(SystemExit, match="cannot compile this model: the network must end in a 1x1"):
+        compiler.main()
