@@ -43,12 +43,21 @@ def load_image(path: Path, h: int, w: int, c: int) -> np.ndarray:
     if not Path(path).is_file():
         raise SystemExit(f"{path}: no such image file")
     if path.suffix == ".npy":
-        arr = np.load(path)
+        try:
+            arr = np.load(path)
+        except (OSError, ValueError, EOFError) as e:
+            raise SystemExit(f"{path}: cannot read the .npy file: {e}")
         if arr.size != h * w * c:
             raise SystemExit(f"{path}: {arr.size} values, the model input {h}x{w}x{c} needs {h * w * c}")
         return arr.astype(np.uint8).reshape(h, w, c)
-    from PIL import Image
-    im = Image.open(path).convert("RGB" if c == 3 else "L").resize((w, h))
+    try:
+        from PIL import Image
+    except ImportError:
+        raise SystemExit("reading png/jpg images needs Pillow: pip install pillow")
+    try:
+        im = Image.open(path).convert("RGB" if c == 3 else "L").resize((w, h))
+    except OSError as e:
+        raise SystemExit(f"{path}: cannot read the image: {e}")
     return np.asarray(im, np.uint8).reshape(h, w, c)
 
 def load_golden_image(path, h, w, c):

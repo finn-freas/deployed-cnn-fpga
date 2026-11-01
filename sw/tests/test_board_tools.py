@@ -230,3 +230,14 @@ def test_load_golden_image_rejects_a_missing_key_and_a_wrong_size(tmp_path):
     np.savez(f, images=np.zeros((2, 5), np.uint8))
     with pytest.raises(SystemExit, match="needs 12"):
         load_golden_image(f, 2, 2, 3)
+
+def test_load_image_rejects_files_that_are_not_readable_images(tmp_path):
+    from npu.board import load_image
+    bad_npy = tmp_path / "img.npy"
+    bad_npy.write_bytes(b"not an array")
+    with pytest.raises(SystemExit, match="cannot read the .npy file"):
+        load_image(bad_npy, 2, 2, 3)
+    bad_png = tmp_path / "img.png"
+    bad_png.write_bytes(b"not a picture")
+    with pytest.raises(SystemExit, match="cannot read the image"):
+        load_image(bad_png, 2, 2, 3)
