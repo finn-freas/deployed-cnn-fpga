@@ -252,6 +252,17 @@ def test_cli_exits_with_a_message_for_a_model_that_does_not_compile(tmp_path, mo
     with pytest.raises(SystemExit, match="cannot compile this model: external store overflow at conv1"):
         compiler.main()
 
+def test_compiler_cli_exits_with_a_message_when_the_output_cannot_be_written(tmp_path, monkeypatch):
+    from npu import compiler
+    from npu.randnet import random_ir
+    ir, arrays = random_ir(5)
+    monkeypatch.setattr(compiler, "load_ir_or_exit", lambda d: (ir, arrays))
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    monkeypatch.setattr(sys, "argv", ["compiler", str(tmp_path), "--out", str(blocker / "out")])
+    with pytest.raises(SystemExit, match="cannot write the program files"):
+        compiler.main()
+
 def test_sim_command_line_reports_cycles_and_layers(tmp_path, monkeypatch, capsys):
     from npu import sim as sim_mod
     from npu.randnet import random_image, random_ir

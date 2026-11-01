@@ -283,7 +283,10 @@ def main():
     ap.add_argument("--out", type=Path, default=Path("build/npu"))
     args = ap.parse_args()
     prog = compile_or_exit(*load_ir_or_exit(args.model_dir))
-    prog.write(args.out)
+    try:
+        prog.write(args.out)
+    except OSError as e:
+        raise SystemExit(f"{args.out}: cannot write the program files: {e.strerror or e}")
     print((args.out / "program.txt").read_text(), end="")
     print(f"external store {prog.ext_used}/{isa.EXT_DEPTH} words ({prog.ext_used * 8 / 1024:.1f} KiB: "
           f"weights + {len(prog.params)} params), instrs {len(prog.instrs)}/{isa.IMEM_DEPTH} -> {args.out}")
