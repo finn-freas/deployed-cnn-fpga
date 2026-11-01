@@ -362,3 +362,15 @@ def test_sim_command_line_accuracy_rejects_unusable_golden_data(tmp_path, monkey
     np.savez(tmp_path / "golden.npz", images=np.zeros((1, 5), np.uint8), labels=np.zeros(1, int))
     with pytest.raises(SystemExit, match="each golden image has 5 values"):
         sim_mod.main()
+
+def test_sim_reports_a_program_without_end():
+    sim = NpuSim([Instr(op=Op.NOP)], np.zeros((0, 8), np.int8))
+    with pytest.raises(RuntimeError, match="did not reach END"):
+        sim.run(np.zeros(8, np.uint8))
+
+def test_sim_stops_at_the_instruction_limit():
+    sim = NpuSim([Instr(op=Op.NOP)] * 4 + [Instr(op=Op.END)], np.zeros((0, 8), np.int8))
+    with pytest.raises(RuntimeError, match="did not reach END"):
+        sim.run(np.zeros(8, np.uint8), max_instrs=3)
+    sim.run(np.zeros(8, np.uint8))
+    assert len(sim.stats.cycles) == 4

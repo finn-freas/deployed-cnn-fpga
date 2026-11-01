@@ -181,7 +181,7 @@ class NpuSim:
     def run(self, image_u8: np.ndarray, max_instrs: int = 1000, trace=None):
         self.load_input(image_u8)
         self.stats = Stats()
-        for pc in range(max_instrs):
+        for pc in range(min(max_instrs, len(self.imem))):
             ins = self.imem[pc]
             if ins.op == Op.END:
                 return self.result
