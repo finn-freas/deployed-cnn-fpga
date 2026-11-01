@@ -137,14 +137,15 @@ compiler rejects layers that violate this.
 ## Example: MLPerf Tiny VWW (MobileNetV1-0.25), first instructions
 
 ```
- 0: CONV   in_base=0    out_base=5888 in_h=96 in_w=96 in_cb=3 out_h=48 out_w=48 out_g=1 ksize=3 stride=2 in_zp=-128 out_zp=-128 in_src=1
- 1: DWCONV in_base=5888 out_base=0    w_base=32 p_base=8 in_h=48 in_w=48 in_cb=1 out_g=1 ksize=3 stride=1 pad=1 ...
- 2: CONV   in_base=0    out_base=3584 w_base=41 p_base=16 in_cb=1 out_g=2 ksize=1 ...
+ 0: CONV   in_base=0    out_base=4864 p_base=48 in_h=96 in_w=96 in_cb=3 out_h=48 out_w=48 out_g=1 ksize=3 stride=2 in_zp=-128 out_zp=-128 in_src=1
+ 1: DWCONV in_base=4864 out_base=0    w_base=64 p_base=73 in_h=48 in_w=48 in_cb=1 out_g=1 ksize=3 stride=1 pad=1 ...
+ 2: CONV   in_base=0    out_base=2560 w_base=89 p_base=105 in_h=48 in_w=48 in_cb=1 out_g=2 ksize=1 ...
  ...
-27: AVGPOOL in_base=7904 out_base=0 in_h=3 in_w=3 in_cb=32 out_h=1 out_w=1 out_g=32 ksize=3 stride=3
-28: CONV   in_base=0    out_base=8191 w_base=25955 p_base=2736 in_cb=32 out_g=1 ksize=1 out_zp=-5 rmode=1   (FC)
-29: ARGMAX in_base=8191 in_w=2
+27: DWCONV in_base=6880 out_base=0    w_base=31443 p_base=31452 in_h=3 in_w=3 in_cb=32 out_g=32 ksize=3 stride=1 rmode=1 uniform=1   (average pool)
+28: CONV   in_base=0    out_base=7167 w_base=31454 p_base=31710 in_cb=32 out_g=1 ksize=1 out_zp=-5 rmode=1   (FC)
+29: ARGMAX in_base=7167 in_w=2
 30: END
 ```
 
-31 instructions; weights 26,211 words (204.8 KiB), params 2,744.
+31 instructions. The external store holds 31,726 words (247.9 KiB): 26,236 words of weights and
+2,745 parameter entries of 2 words each.
