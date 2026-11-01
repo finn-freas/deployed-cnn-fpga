@@ -339,3 +339,26 @@ def test_cli_exits_with_a_message_for_a_malformed_network(tmp_path, monkeypatch)
     monkeypatch.setattr(sys, "argv", ["compiler", str(tmp_path)])
     with pytest.raises(SystemExit, match="cannot compile this model: the network must end in a 1x1"):
         compiler.main()
+
+def test_sim_command_line_accuracy_rejects_unusable_golden_data(tmp_path, monkeypatch):
+    from npu import sim as sim_mod
+    from npu.randnet import random_image, random_ir
+    ir, arrays = random_ir(2)
+    (tmp_path / "ir.json").write_text(json.dumps(ir))
+    np.savez(tmp_path / "ir.npz", **arrays)
+    image = random_image(ir, 0)
+    np.save(tmp_path / "input.npy", image)
+    monkeypatch.setattr(sys, "argv", ["sim", str(tmp_path), "--image", str(tmp_path / "input.npy"),
+                                      "--accuracy", "2"])
+
+    np.savez(tmp_path / "golden.npz", images=image[None], labels=np.zeros(2, int))
+    with pytest.raises(SystemExit, match="1 images but 2 labels"):
+        sim_mod.main()
+
+    np.savez(tmp_path / "golden.npz", images=image[None][:0], labels=np.zeros(0, int))
+    with pytest.raises(SystemExit, match="no golden images to check"):
+        sim_mod.main()
+
+    np.savez(tmp_path / "golden.npz", images=np.zeros((1, 5), np.uint8), labels=np.zeros(1, int))
+    with pytest.raises(SystemExit, match="each golden image has 5 values"):
+        sim_mod.main()

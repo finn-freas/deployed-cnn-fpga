@@ -318,7 +318,14 @@ def main():
             images, labels = gold["images"], gold["labels"]
         except (OSError, ValueError, KeyError) as e:
             raise SystemExit(f"{args.model_dir / 'golden.npz'}: cannot read images and labels: {e}")
-        count = min(args.accuracy, len(labels), len(images))
+        if len(labels) != len(images):
+            raise SystemExit(f"{args.model_dir / 'golden.npz'}: {len(images)} images but {len(labels)} labels")
+        if len(labels) == 0:
+            raise SystemExit(f"{args.model_dir / 'golden.npz'}: no golden images to check")
+        if images[0].size != m["h"] * m["w"] * m["c"]:
+            raise SystemExit(f"{args.model_dir / 'golden.npz'}: each golden image has {images[0].size} values, "
+                             f"the model input {m['h']}x{m['w']}x{m['c']} needs {m['h'] * m['w'] * m['c']}")
+        count = min(args.accuracy, len(labels))
         correct = sum(sim.run(images[i])[0] == int(labels[i]) for i in range(count))
         print(f"accuracy {correct / count:.4f} ({correct}/{count} golden images)")
 
