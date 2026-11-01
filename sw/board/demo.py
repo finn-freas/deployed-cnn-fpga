@@ -31,6 +31,8 @@ def main():
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("images", nargs="*")
     args = ap.parse_args()
+    if args.baud < 1:
+        ap.error("--baud must be positive")
 
     try:
         import cv2

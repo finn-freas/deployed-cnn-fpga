@@ -145,6 +145,10 @@ def main():
     args = ap.parse_args()
     if args.images < 1:
         ap.error("--images must be at least 1")
+    if args.baud < 1:
+        ap.error("--baud must be positive")
+    if args.timeout < 0:
+        ap.error("--timeout must not be negative")
 
     try:
         import serial

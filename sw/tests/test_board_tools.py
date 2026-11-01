@@ -171,6 +171,21 @@ def test_board_check_rejects_a_non_positive_image_count(monkeypatch):
         board_check.main()
     assert e.value.code == 2
 
+@pytest.mark.parametrize("flag,value", [("--baud", "0"), ("--timeout", "-1")])
+def test_board_check_rejects_a_bad_baud_or_timeout(monkeypatch, flag, value):
+    import board_check
+    monkeypatch.setattr(sys, "argv", ["board_check", "--port", "X", flag, value])
+    with pytest.raises(SystemExit) as e:
+        board_check.main()
+    assert e.value.code == 2
+
+def test_demo_rejects_a_non_positive_baud(monkeypatch):
+    import demo
+    monkeypatch.setattr(sys, "argv", ["demo", "--port", "X", "--baud", "0"])
+    with pytest.raises(SystemExit) as e:
+        demo.main()
+    assert e.value.code == 2
+
 def test_boot_words_rejects_an_input_the_header_cannot_describe():
     from npu import board
     with pytest.raises(SystemExit, match="does not fit the boot header"):
