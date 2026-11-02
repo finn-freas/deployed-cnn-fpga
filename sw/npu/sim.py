@@ -291,6 +291,8 @@ def main():
         ap.error("--accuracy must be at least 1")
     if not 0 < args.mhz < float("inf"):
         ap.error("--mhz must be a finite number greater than 0")
+    if args.accuracy is not None and not (args.model_dir / "golden.npz").is_file():
+        ap.error(f"--accuracy needs {args.model_dir / 'golden.npz'}, which does not exist")
     prog = compile_or_exit(*load_ir_or_exit(args.model_dir))
     m = prog.meta["input"]
     if args.image:

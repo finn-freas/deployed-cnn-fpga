@@ -364,6 +364,16 @@ def test_sim_command_line_accuracy_rejects_unusable_golden_data(tmp_path, monkey
     with pytest.raises(SystemExit, match="each golden image has 5 values"):
         sim_mod.main()
 
+def test_sim_command_line_accuracy_without_golden_data_fails_before_running(tmp_path, monkeypatch, capsys):
+    from npu import sim as sim_mod
+    monkeypatch.setattr(sys, "argv", ["sim", str(tmp_path), "--accuracy", "2"])
+    with pytest.raises(SystemExit) as e:
+        sim_mod.main()
+    assert e.value.code == 2
+    captured = capsys.readouterr()
+    assert "golden.npz, which does not exist" in captured.err
+    assert "cycles" not in captured.out
+
 def test_sim_reports_a_program_without_end():
     sim = NpuSim([Instr(op=Op.NOP)], np.zeros((0, 8), np.int8))
     with pytest.raises(RuntimeError, match="did not reach END"):
