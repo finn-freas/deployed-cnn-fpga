@@ -171,7 +171,7 @@ def test_board_check_rejects_a_non_positive_image_count(monkeypatch):
         board_check.main()
     assert e.value.code == 2
 
-@pytest.mark.parametrize("flag,value", [("--baud", "0"), ("--timeout", "-1")])
+@pytest.mark.parametrize("flag,value", [("--baud", "0"), ("--timeout", "-1"), ("--timeout", "nan"), ("--timeout", "inf")])
 def test_board_check_rejects_a_bad_baud_or_timeout(monkeypatch, flag, value):
     import board_check
     monkeypatch.setattr(sys, "argv", ["board_check", "--port", "X", flag, value])

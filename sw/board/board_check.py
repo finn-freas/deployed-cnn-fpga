@@ -147,8 +147,8 @@ def main():
         ap.error("--images must be at least 1")
     if args.baud < 1:
         ap.error("--baud must be positive")
-    if args.timeout < 0:
-        ap.error("--timeout must not be negative")
+    if not 0 <= args.timeout < float("inf"):
+        ap.error("--timeout must be a finite number, 0 or more")
 
     try:
         import serial
