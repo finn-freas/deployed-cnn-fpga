@@ -299,13 +299,14 @@ def test_sim_command_line_accuracy_against_golden_labels(tmp_path, monkeypatch, 
     with pytest.raises(SystemExit):
         sim_mod.main()
 
-def test_sim_command_line_rejects_a_non_positive_clock(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("value", ["0", "-5", "nan", "inf"])
+def test_sim_command_line_rejects_an_unusable_clock(tmp_path, monkeypatch, capsys, value):
     from npu import sim as sim_mod
-    monkeypatch.setattr(sys, "argv", ["sim", str(tmp_path), "--mhz", "0"])
+    monkeypatch.setattr(sys, "argv", ["sim", str(tmp_path), "--mhz", value])
     with pytest.raises(SystemExit) as e:
         sim_mod.main()
     assert e.value.code == 2
-    assert "--mhz must be greater than 0" in capsys.readouterr().err
+    assert "--mhz must be a finite number greater than 0" in capsys.readouterr().err
 
 def test_compile_rejects_malformed_or_oversized_networks_with_a_message():
     import copy
