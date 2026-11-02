@@ -83,7 +83,10 @@ check the RTL against it.
 
 ```bash
 cd sw && python -m npu.compiler ../models/ir/vww --out ../build/npu_vww
+cd sw && python -m npu.sim ../models/ir/vww --layers     # class, cycles, latency, cost per instruction
 ```
+
+Without `--image` the simulator uses the model's first golden image, or a mid-grey image if the model has none.
 
 ## Results
 
