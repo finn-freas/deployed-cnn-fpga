@@ -45,10 +45,12 @@ def main():
         sys.exit(f"cannot open {args.port}: {e}")
 
     if args.images:
+        unreadable = 0
         for path in args.images:
             img = cv2.imread(path)
             if img is None:
                 print(f"{path}: cannot read", file=sys.stderr)
+                unreadable += 1
                 continue
             try:
                 person, score, lat, rt = infer(port, to_input(img))
@@ -56,6 +58,8 @@ def main():
                 sys.exit(f"{path}: {e}")
             print(f"{path}: {'PERSON' if person else 'no person'} (score {score:+d}), "
                   f"NPU {lat:.2f} ms, round trip {rt:.0f} ms")
+        if unreadable:
+            sys.exit(f"{unreadable} of {len(args.images)} images could not be read")
         return
 
     cam = cv2.VideoCapture(args.camera)

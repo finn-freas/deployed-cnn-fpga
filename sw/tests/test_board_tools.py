@@ -221,6 +221,11 @@ def test_demo_reports_a_camera_that_cannot_be_opened(monkeypatch):
     with pytest.raises(SystemExit, match="cannot open camera 0"):
         _run_demo(monkeypatch, [], cam_open=False)
 
+def test_demo_exits_non_zero_when_an_image_cannot_be_read(monkeypatch, capsys):
+    with pytest.raises(SystemExit, match="2 of 2 images could not be read"):
+        _run_demo(monkeypatch, ["a.png", "b.png"])
+    assert "a.png: cannot read" in capsys.readouterr().err
+
 def test_demo_reports_a_missing_dependency(monkeypatch):
     monkeypatch.setitem(sys.modules, "cv2", None)
     monkeypatch.setattr(sys, "argv", ["demo.py", "--port", "X"])
