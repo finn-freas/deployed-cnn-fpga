@@ -294,7 +294,8 @@ def main():
     except OSError as e:
         raise SystemExit(f"{args.out}: cannot write the program files: {e.strerror or e}")
     print((args.out / "program.txt").read_text(), end="")
-    print(f"external store {prog.ext_used}/{isa.EXT_DEPTH} words ({prog.ext_used * 8 / 1024:.1f} KiB: "
+    act_peak = max(L["base"] + L["h"] * L["w"] * L["cb"] for L in prog.meta["layers"])
+    print(f"activation memory {act_peak}/{isa.ACT_DEPTH} words, external store {prog.ext_used}/{isa.EXT_DEPTH} words ({prog.ext_used * 8 / 1024:.1f} KiB: "
           f"weights + {len(prog.params)} params), instrs {len(prog.instrs)}/{isa.IMEM_DEPTH} -> {args.out}")
 
 if __name__ == "__main__":

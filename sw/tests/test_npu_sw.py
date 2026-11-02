@@ -385,3 +385,15 @@ def test_sim_stops_at_the_instruction_limit():
         sim.run(np.zeros(8, np.uint8), max_instrs=3)
     sim.run(np.zeros(8, np.uint8))
     assert len(sim.stats.cycles) == 4
+
+def test_compiler_cli_reports_activation_memory_use(tmp_path, monkeypatch, capsys):
+    from npu import compiler
+    from npu.randnet import random_ir
+    ir, arrays = random_ir(5)
+    (tmp_path / "ir.json").write_text(json.dumps(ir))
+    np.savez(tmp_path / "ir.npz", **arrays)
+    prog = compile_ir(ir, arrays)
+    peak = max(L["base"] + L["h"] * L["w"] * L["cb"] for L in prog.meta["layers"])
+    monkeypatch.setattr(sys, "argv", ["compiler", str(tmp_path), "--out", str(tmp_path / "out")])
+    compiler.main()
+    assert f"activation memory {peak}/{isa.ACT_DEPTH} words" in capsys.readouterr().out
