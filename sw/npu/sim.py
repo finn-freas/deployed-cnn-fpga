@@ -306,11 +306,12 @@ def main():
     cls, score = sim.run(img)
     n = len(prog.instrs)
     names = {L["instr"]: L["name"] for L in prog.meta["layers"]}
-    if args.layers:
-        print(f"{'pc':>3} {'op':8s} {'layer':22s} {'cycles':>9} {'MACs':>11}")
-        for pc, (cyc, macs) in enumerate(zip(sim.stats.cycles, sim.stats.macs)):
-            print(f"{pc:3d} {prog.instrs[pc].op.name.lower():8s} {names.get(pc, ''):22s} {cyc:9d} {macs:11d}")
     total = total_cycles(sim.stats, n)
+    if args.layers:
+        print(f"{'pc':>3} {'op':8s} {'layer':22s} {'cycles':>9} {'share':>6} {'MACs':>11}")
+        for pc, (cyc, macs) in enumerate(zip(sim.stats.cycles, sim.stats.macs)):
+            print(f"{pc:3d} {prog.instrs[pc].op.name.lower():8s} {names.get(pc, ''):22s} {cyc:9d} "
+                  f"{100 * cyc / total:5.1f}% {macs:11d}")
     print(f"class {cls}, score {score:+d}")
     print(f"{total} cycles, {total / (args.mhz * 1000):.3f} ms at {args.mhz:g} MHz, "
           f"{sum(sim.stats.macs)} MACs over {n} instructions")

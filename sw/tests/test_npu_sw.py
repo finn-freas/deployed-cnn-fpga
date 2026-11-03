@@ -280,6 +280,8 @@ def test_sim_command_line_reports_cycles_and_layers(tmp_path, monkeypatch, capsy
     assert f"class {cls}, score {score:+d}" in out
     assert f"{total} cycles" in out
     assert out.count("\n") == len(s.stats.cycles) + 3
+    top = max(range(len(s.stats.cycles)), key=s.stats.cycles.__getitem__)
+    assert f"{100 * s.stats.cycles[top] / total:5.1f}%" in out
 
 def test_sim_command_line_accuracy_against_golden_labels(tmp_path, monkeypatch, capsys):
     from npu import sim as sim_mod
