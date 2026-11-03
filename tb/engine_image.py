@@ -11,7 +11,7 @@ import board as B
 import pack as P
 
 HEX = ROOT / "build" / "sim" / "engine_mem.hex"
-MODEL = Path(os.environ.get("FB_MODEL", ROOT / "models" / "p2_board.pkl"))
+MODEL = Path(os.environ.get("FB_MODEL", ROOT / "models" / "pr_board.pkl"))
 KEY = MODEL.name.split("_")[0]
 
 

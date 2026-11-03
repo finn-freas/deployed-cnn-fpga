@@ -40,6 +40,15 @@ EMOJI_HORIZON = 6
 EMOJI_RECENT = 8
 
 
+def board_file(mdir, key):
+    f = mdir / f"{key}_board.pkl"
+    xz = mdir / f"{key}_board.pkl.xz"
+    if not f.exists() and xz.exists():
+        import lzma
+        f.write_bytes(lzma.decompress(xz.read_bytes()))
+    return f
+
+
 def make_rng(seed):
     x = seed & 0xFFFFFFFF
     x ^= x >> 16
@@ -71,7 +80,7 @@ class Person:
     def __init__(self, key, mdir=None):
         self.key = key
         mdir = Path(mdir) if mdir else MODELS
-        self.p = pickle.loads((mdir / f"{key}_board.pkl").read_bytes())
+        self.p = pickle.loads(board_file(mdir, key).read_bytes())
         self.m = B.IntModel(self.p)
         self.name = "roast bot"
         cal = mdir / f"{key}_emoji.json"
@@ -436,7 +445,7 @@ def board_reply(person, tok, text, temp, cut, emoji=0.5):
 
 def main():
     tok = T.load_chat()
-    keys = [k for k in ["pr"] if (MODELS / f"{k}_board.pkl").exists()]
+    keys = [k for k in ["pr"] if board_file(MODELS, k).exists()]
     if not keys:
         sys.exit("no model yet (models/pr_board.pkl)")
     link = None

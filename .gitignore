@@ -1,7 +1,13 @@
-data/
-models/
+models/*_board.pkl
+models/kv8/
 build/
 *.log
 __pycache__/
 sim_build/
 results.xml
+data/raw/
+data/corpus/
+data/tok/*.bin
+data/tok/info.json
+data/people/*/partial.jsonl
+data/people/*/emoji_scores_*.json

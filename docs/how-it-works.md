@@ -49,7 +49,10 @@ said. "Your mom" comebacks are only kept right after an insult.
 so it doesn't forget how to talk. Training stops when the validation loss stops going down.
 Then the model is quantized and packed into one 8 MB image for the SDRAM.
 
-`scripts/train_roastbot.sh` runs all of it. You need a GPU with 8 GB for the writer model.
+`scripts/train_roastbot.sh` runs all of it. You need a GPU with 8 GB for the writer model. The
+base model, the roast chats after filtering (7,185 for training and 661 for validation, in
+`data/people/pr/`) and the finished model are all in the repo, so you can also start from any
+step, like fine-tuning the base model on your own chats.
 
 ## How a reply works
 
