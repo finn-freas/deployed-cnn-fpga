@@ -12,9 +12,8 @@ you> ur just a bot
 roast bot> so you lost to a tiny little piece of plastic and still can't get a joke? fuckin pathetic 😤
 ```
 
-It's a 16-layer, 12-million-parameter language model, and the FPGA does all of it: every
-layer, the attention, the chat memory, picking each word and choosing the best of 6 replies.
-The laptop just sends your message over USB and prints the answer.
+It's a 16-layer, 12-million-parameter language model, and the FPGA does all of it.
+The laptop just sends your message over USB and prints the answer (but you don't need a laptop!)
 
 - a reply takes about **4.8 seconds**
 - the model fills the board's whole 8 MB of memory
