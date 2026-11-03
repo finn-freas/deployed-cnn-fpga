@@ -14,17 +14,23 @@ It's a Llama-style transformer, sized to fit the board:
 | | |
 |-|-|
 | Layers | 16 |
-| Width | 256 (704 in the feed-forward part) |
+| Width | 256 |
 | Attention | 8 query heads sharing 2 key/value heads, rotary positions |
+| Feed-forward | SwiGLU, 704 wide |
 | Vocabulary | 3,072 word pieces (byte-level BPE, with slots for emoji) |
 | Context | 512 word pieces |
 | Weights | 4-bit, with an 8-bit scale per group of 32 |
 | Word table and chat memory | 8-bit |
 | Everything in between | 16-bit integers |
 
-There's no floating point on the FPGA. Softmax, RMSNorm and SiLU use small lookup tables
-instead, so all the math is integer math. `board.py` has the same math in Python, and the
-hardware has to match it exactly.
+The feed-forward part of each layer is SwiGLU, like in Llama: `down(SiLU(gate(x)) × up(x))`,
+where SiLU(z) = z × sigmoid(z). The gate matrix decides how much of each of the 704 values gets
+through, and the up matrix gives the values. SiLU is close to ReLU for big inputs but smooth
+around zero, and the gating works better than a plain activation at the same size.
+
+There's no floating point on the FPGA. Softmax, RMSNorm and the sigmoid inside SiLU use small
+lookup tables instead, so all the math is integer math. `board.py` has the same math in
+Python, and the hardware has to match it exactly.
 
 ## How the roast bot is trained
 
@@ -120,7 +126,7 @@ once per word piece.
 |-|-|
 | `engine` | reads the operation list and runs the other blocks |
 | `mv_unit` | matrix times vector: 16 4-bit weights per clock straight out of the SDRAM stream, plus the word-table scores |
-| `vec_unit` | everything element-wise: looking up words, RMSNorm, rotary positions, SiLU, adds, writing the chat memory |
+| `vec_unit` | everything element-wise: looking up words, RMSNorm, rotary positions, the SwiGLU gating (sigmoid table, then two multiplies), adds, writing the chat memory |
 | `attn_unit` | attention over the 8-bit chat memory, 4 query heads per key/value head at once |
 | `sampler` | softmax, the emoji control, picking the word, and the candidate score |
 | `sdram_ctrl`, `stream_rd`, `sdram_cdc` | the SDRAM controller at 108 MHz, the read stream, and the crossing to 54 MHz |
