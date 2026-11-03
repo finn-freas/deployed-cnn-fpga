@@ -23,23 +23,26 @@ The laptop just sends your message over USB and prints the answer.
 
 ## Running it
 
-The trained model is in the repo, so you don't need to train anything:
+The trained model and a tested bitstream are in the repo, so you don't need to train or build
+anything:
 
 ```bash
 pip install numpy torch tokenizers
-./chat.sh                                                        # chat with it on your computer
-scripts/build_board.sh                                           # or build the bitstream
-openFPGALoader -b tangnano20k -f build/board54/roastbot_top.fs   # write it to flash
-./chat.sh --board                                                # and chat with it on the board
+./chat.sh                                                    # chat with it on your computer
+openFPGALoader -b tangnano20k -f bitstream/roastbot.fs       # or write the bitstream to the board's flash
+./chat.sh --board                                            # and chat with it on the board
 ```
 
 `./chat.sh` runs the exact same integer math as the board, so you get the same replies
-without one.
+without one. To build the bitstream yourself, run `scripts/build_board.sh`. Not every
+placement seed places, so try a few (`SEED=6 scripts/build_board.sh`), and check the SDRAM
+timing on the board with `scripts/sdram_diag.py` before you trust it.
 
 ## What's in here
 
 | | |
 |-|-|
+| `bitstream/roastbot.fs` | the bitstream (14 of 14 replies identical to the CPU, SDRAM clock phase 4) |
 | `models/pr_board.pkl.xz` | the quantized model the board runs (unpacked the first time you chat) |
 | `models/pr.pt` | the same model before quantizing, in PyTorch |
 | `models/pre_b16.pt` | the base model, before it learned to roast |
