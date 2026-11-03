@@ -14,7 +14,7 @@ import tok as T
 from engine import CLK_HZ, token_cycles
 
 ROOT = Path(__file__).resolve().parent
-HELP = ("/reset, /temp 0.6, /cut 4, /seed 7, /emoji 0.5 (0.5 = the usual amount, higher = more), "
+HELP = ("/reset, /temp 0.6, /cut 4, /seed 7 or /seed random, /emoji 0.5 (0.5 = the usual amount, higher = more), "
         "/best 6 (candidates per reply, 1 = off), /info, /quit")
 MODELS = ROOT / "models"
 MAX_REPLY = 80
@@ -57,6 +57,12 @@ def make_rng(seed):
     x = (x * 0xC2B2AE35) & 0xFFFFFFFF
     x ^= x >> 16
     return B.XorShift(x)
+
+
+def pick_seed(arg):
+    seed = int.from_bytes(os.urandom(4), "little") % 1_000_000 if arg == "random" else int(arg)
+    print(f"seed {seed}")
+    return seed
 
 
 def emoji_scale(emoji):
@@ -459,6 +465,8 @@ def main():
         people = {k: Person(k) for k in keys}
     cur = next(iter(people.values()))
     temp, cut, seed, emoji, best = None, 4.0, 1, None, None
+    if "--seed" in sys.argv:
+        seed = pick_seed(sys.argv[sys.argv.index("--seed") + 1])
     rng = make_rng(seed)
     if link:
         link.seed(rng.x)
@@ -494,10 +502,10 @@ def main():
                 emoji = float(arg)
                 print(f"emoji {emoji} (0.5 = their usual amount, 1 = more, 0 = none)")
             elif cmd == "seed" and arg:
-                rng = make_rng(int(arg))
+                seed = pick_seed(arg)
+                rng = make_rng(seed)
                 if link:
                     link.seed(rng.x)
-                print(f"seed {arg}")
             elif cmd == "best" and arg:
                 best = None if arg == "auto" else max(1, min(BEST_N, int(arg)))
                 print("each person's own number of candidates" if best is None else

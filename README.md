@@ -34,7 +34,9 @@ openFPGALoader -b tangnano20k -f bitstream/roastbot.fs       # or write the bits
 ```
 
 `./chat.sh` runs the exact same integer math as the board, so you get the same replies
-without one. To build the bitstream yourself, run `scripts/build_board.sh`. Not every
+without one. Every chat starts from seed 1, so the same messages always get the same
+replies. `./chat.sh --seed random` picks a new seed and prints it, so you can replay a chat later
+with `--seed <number>`. To build the bitstream yourself, run `scripts/build_board.sh`. Not every
 placement seed places, so try a few (`SEED=6 scripts/build_board.sh`), and check the SDRAM
 timing on the board with `scripts/sdram_diag.py` before you trust it.
 
