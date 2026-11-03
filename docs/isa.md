@@ -15,9 +15,9 @@ models (160-bit instructions).
 |--------|----------|----------|
 | Instruction | 64 × 160 b | Program |
 | Input buffer | 32 KiB, bytes | Image, uint8, packed HWC (`addr = (y·W + x)·C + c`), written by the camera or host |
-| Activation | 8192 × 64 b (address space) | Feature maps, channel-blocked (below) |
+| Activation | 7168 × 64 b (address space) | Feature maps, channel-blocked (below) |
 | Weight store | 65536 × 64 b (address space) | Per layer; streamed from flash/SDRAM in hardware |
-| Param store | 4096 × 70 b (address space) | Per output channel `{shift[5:0], mult[31:0], bias[31:0]}`; streamed with the weights, with only the current layer buffered on chip |
+| Param store | 70 b entries, 2 words each in the same 65536-word address space as the weights | Per output channel `{shift[5:0], mult[31:0], bias[31:0]}`; streamed with the weights, with at most 256 entries of the current layer buffered on chip |
 | Result register | `{class[7:0], score[7:0]}` | Written by `ARGMAX` |
 
 Physical on-chip sizes are a hardware decision (BSRAM is the tight resource). The
@@ -64,7 +64,7 @@ convolutions fill padding with `in_zp` rather than 0.
 | in_base | 16 | | input tensor base (activation memory) |
 | out_base | 16 | | output tensor base |
 | w_base | 16 | | weight store base |
-| p_base | 12 | | param store base |
+| p_base | 16 | | param store base |
 | in_h, in_w | 7, 7 | | input size; ARGMAX: `in_w` = count |
 | in_cb | 6 | | input channel blocks; for `in_src = 1`, the channel count C |
 | out_h, out_w | 7, 7 | | output size |
