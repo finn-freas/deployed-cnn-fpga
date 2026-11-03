@@ -1,0 +1,3 @@
+*.fs binary linguist-detectable=false
+models/** linguist-detectable=false
+data/** linguist-detectable=false
