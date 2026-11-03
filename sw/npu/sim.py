@@ -312,6 +312,8 @@ def main():
         for pc, (cyc, macs) in enumerate(zip(sim.stats.cycles, sim.stats.macs)):
             print(f"{pc:3d} {prog.instrs[pc].op.name.lower():8s} {names.get(pc, ''):22s} {cyc:9d} "
                   f"{100 * cyc / total:5.1f}% {macs:11d}")
+        seq = SEQ_PER_INSTR * n
+        print(f"{'':3s} {'sequencer':8s} {'':22s} {seq:9d} {100 * seq / total:5.1f}% {0:11d}")
     print(f"class {cls}, score {score:+d}")
     print(f"{total} cycles, {total / (args.mhz * 1000):.3f} ms at {args.mhz:g} MHz, "
           f"{sum(sim.stats.macs)} MACs over {n} instructions")
