@@ -1,6 +1,8 @@
 `default_nettype none
 
-module sdram_model (
+module sdram_model #(
+    parameter string INIT = ""
+) (
     input  wire logic        clk,
     input  wire logic        cke,
     input  wire logic        cs_n,
@@ -15,6 +17,7 @@ module sdram_model (
     output      logic        dq_oe
 );
     logic [31:0] mem [1 << 21];
+    initial if (INIT != "") $readmemh(INIT, mem);
     logic [10:0] row [4];
     logic [3:0]  open_;
     logic [2:0]  cas_l;

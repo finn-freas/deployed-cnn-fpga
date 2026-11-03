@@ -2,22 +2,23 @@
 
 module sdram_ctrl #(
     parameter int CLK_HZ = 54_000_000,
-    parameter int CAS    = 2
+    parameter int CAS    = 2,
+    parameter bit NEG    = 1'b0
 ) (
     input  wire logic        clk,
     input  wire logic        rst,
     output      logic        ready,
     output      logic        cal_err,
-    output      logic [1:0]  cal_rl,
+    output      logic [15:0] diag,
     output      logic        idle,
     input  wire logic        rd_req,
-    input  wire logic [16:0] rd_addr,
+    input  wire logic [19:0] rd_addr,
     input  wire logic [15:0] rd_len,
     output      logic        rd_ack,
     output      logic        rvalid,
     output      logic [63:0] rdata,
     input  wire logic        wr_req,
-    input  wire logic [16:0] wr_addr,
+    input  wire logic [19:0] wr_addr,
     input  wire logic [63:0] wr_data,
     output      logic        wr_ack,
     output      logic        sd_cke,
@@ -36,14 +37,16 @@ module sdram_ctrl #(
     function automatic int cyc(input int ns);
         return (int'((64'(ns) * 64'(CLK_HZ) + 64'd999_999_999) / 64'd1_000_000_000));
     endfunction
-    localparam int T_RP   = (cyc(15) < 1) ? 1 : cyc(15);
-    localparam int T_RCD  = (cyc(15) < 1) ? 1 : cyc(15);
+    localparam int T_RP   = (cyc(18) < 1) ? 1 : cyc(18);
+    localparam int T_RCD  = (cyc(18) < 1) ? 1 : cyc(18);
     localparam int T_RC   = cyc(60) + 1;
     localparam int T_WR   = 2;
     localparam int T_INIT = cyc(200_000);
     localparam int REF_CYC = cyc(7_800);
     localparam int RL_MIN = CAS - 1, RL_N = 4;
     localparam int RL_MAX = RL_MIN + RL_N - 1;
+    localparam int NPT = RL_N;
+    localparam int CAL_REPS = 15;
 
     localparam logic [2:0] C_NOP = 3'b111, C_ACT = 3'b011, C_RD = 3'b101, C_WR = 3'b100,
                            C_PRE = 3'b010, C_REF = 3'b001, C_MRS = 3'b000;
@@ -62,41 +65,74 @@ module sdram_ctrl #(
     logic [15:0] ref_cnt;
     logic        ref_due;
 
-    logic [14:0] b_next;
+    logic [17:0] b_next;
     logic [15:0] bursts_left;
     logic [2:0]  ph;
     logic [15:0] skip;
     logic [15:0] words_left;
     logic [RL_MAX+8:0] rd_mark;
-    logic [1:0]  rl_sel;
+    logic [RL_MAX+8:0] rl_mask;
     logic [2:0]  beat;
     logic        beat_v;
     logic [31:0] dq_q;
     logic [6:0]  wcol;
     logic [31:0] lo;
 
-    always_comb begin
-        beat_v = 1'b0;
-        for (int k = 0; k < 8; k++)
-            if (rd_mark[RL_MIN + int'(rl_sel) + k]) beat_v = 1'b1;
+    wire [RL_MAX+8:0] rd_mark_n = {rd_mark[RL_MAX+7:0], cmd == C_RD};
+    always_ff @(posedge clk) beat_v <= |(rd_mark_n & rl_mask);
+
+    logic [31:0] dq_n;
+    if (NEG) begin : g_neg
+        always_ff @(negedge clk) dq_n <= sd_dq_i;
+    end else begin : g_pos
+        assign dq_n = sd_dq_i;
     end
 
     always_ff @(posedge clk) begin
-        rd_mark <= {rd_mark[RL_MAX+7:0], cmd == C_RD};
-        dq_q    <= sd_dq_i;
+        rd_mark <= rd_mark_n;
+        dq_q    <= dq_n;
     end
 
     function automatic logic [31:0] pat(input logic [2:0] i);
         return 32'hA5C3_0F00 ^ {i, 5'b0, ~i, 5'b0, i, 13'h1F00};
     endfunction
     logic [2:0] cal_i;
-    logic [RL_N-1:0] cal_ok;
+    logic [3:0] cal_rep;
+    logic [NPT-1:0] cal_ok;
+    logic [3:0] pick;
+    logic [7:0] eq;
+    always_comb
+        for (int k = 0; k < 8; k++) eq[k] = (dq_q == pat(3'(k)));
+    logic [7:0]        eq_r;
+    logic [RL_MAX+8:0] rd_mark_d;
+    always_ff @(posedge clk) begin
+        eq_r      <= eq;
+        rd_mark_d <= rd_mark;
+    end
+    wire  [3:0] mid_ok;
+
+    function automatic logic [3:0] mid(input logic [NPT-1:0] ok);
+        int a, b;
+        logic gap;
+        a = -1; b = -1; gap = 1'b0;
+        for (int t = 0; t < NPT; t++) begin
+            if (ok[t]) begin
+                if (a < 0) a = t;
+                if (!gap) b = t;
+            end else if (a >= 0) begin
+                gap = 1'b1;
+            end
+        end
+        return (a < 0) ? 4'd0 : 4'((a + b + 1) / 2);
+    endfunction
 
     assign rvalid = (st == RD_RUN || st == RD_DRAIN) && beat_v && beat[0] && skip == 0
                     && words_left != 0;
     assign rdata  = {dq_q, lo};
 
-    assign cal_rl = rl_sel;
+    assign diag   = 16'({cal_ok, pick});
+    assign mid_ok = mid(cal_ok);
+
     assign idle   = (st == IDLE);
 
     assign rd_ack = (st == IDLE) && ready && rd_req && !ref_due && !wr_req && rd_len != 0;
@@ -131,7 +167,8 @@ module sdram_ctrl #(
             cal_err <= 1'b0;
             ref_cnt <= 16'(REF_CYC);
             ref_due <= 1'b0;
-            rl_sel  <= '0;
+            rl_mask <= (RL_MAX+9)'(8'hFF) << RL_MIN;
+            pick    <= '0;
             beat    <= '0;
         end else begin
             unique case (st)
@@ -160,14 +197,16 @@ module sdram_ctrl #(
                     sd_addr <= {1'b0, 1'b1, 2'b00, 3'(CAS), 1'b0, 3'b011};
                     wt      <= 16'd3;
                     cal_i   <= '0;
+                    cal_ok  <= '1;
+                    cal_rep <= 4'(CAL_REPS);
                     after   <= CAL_WR;
                     st      <= WAIT;
                 end
 
                 CAL_WR: begin
                     cmd     <= C_ACT;
-                    sd_ba   <= 2'b00;
-                    sd_addr <= '0;
+                    sd_ba   <= 2'b11;
+                    sd_addr <= '1;
                     st      <= WAIT;
                     wt      <= 16'(T_RCD);
                     after   <= WR_LO;
@@ -175,30 +214,32 @@ module sdram_ctrl #(
 
                 CAL_RD: begin
                     cmd     <= C_ACT;
-                    sd_ba   <= 2'b00;
-                    sd_addr <= '0;
-                    rl_sel  <= '0;
+                    sd_ba   <= 2'b11;
+                    sd_addr <= '1;
                     wt      <= 16'(T_RCD);
                     after   <= CAL_CHK;
                     st      <= WAIT;
-                    cal_ok  <= '1;
                 end
 
                 CAL_CHK: begin
                     if (wt == 16'hFFFF) begin
                         cmd     <= C_RD;
                         sd_addr <= 11'b100_0000_0000;
-                        wt      <= 16'(RL_MAX + 9);
+                        wt      <= 16'(RL_MAX + 12);
                         cal_i   <= '0;
                     end else if (wt != 0) begin
                         wt <= wt - 16'd1;
                         for (int c = 0; c < RL_N; c++)
                             for (int k = 0; k < 8; k++)
-                                if (rd_mark[RL_MIN + c + k] && dq_q != pat(3'(k))) cal_ok[c] <= 1'b0;
+                                if (rd_mark_d[RL_MIN + c + k] && !eq_r[k]) cal_ok[c] <= 1'b0;
+                    end else if (cal_rep != 0) begin
+                        cal_rep <= cal_rep - 4'd1;
+                        st      <= CAL_RD;
                     end else begin
                         ready   <= 1'b1;
                         cal_err <= (cal_ok == 0);
-                        rl_sel  <= cal_ok[0] ? 2'd0 : cal_ok[1] ? 2'd1 : cal_ok[2] ? 2'd2 : 2'd3;
+                        pick    <= mid_ok;
+                        rl_mask <= (RL_MAX+9)'(8'hFF) << (RL_MIN + int'(mid_ok));
                         st      <= IDLE;
                     end
                 end
@@ -216,12 +257,12 @@ module sdram_ctrl #(
                         wcol    <= {wr_addr[8:4], wr_addr[1:0]};
                         cmd     <= C_ACT;
                         sd_ba   <= wr_addr[3:2];
-                        sd_addr <= 11'(wr_addr[16:9]);
+                        sd_addr <= wr_addr[19:9];
                         wt      <= 16'(T_RCD);
                         after   <= WR_LO;
                         st      <= WAIT;
                     end else if (rd_ack) begin
-                        b_next      <= rd_addr[16:2];
+                        b_next      <= rd_addr[19:2];
                         bursts_left <= 16'((18'(rd_addr[1:0]) + 18'(rd_len) + 18'd3) >> 2);
                         skip        <= 16'(rd_addr[1:0]);
                         words_left  <= rd_len;
@@ -269,13 +310,13 @@ module sdram_ctrl #(
                         end else begin
                             cmd     <= C_ACT;
                             sd_ba   <= b_next[1:0];
-                            sd_addr <= 11'(b_next[14:7]);
+                            sd_addr <= b_next[17:7];
                         end
                     end else if (ph == 3'(T_RCD)) begin
                         cmd         <= C_RD;
                         sd_ba       <= b_next[1:0];
                         sd_addr     <= {3'b100, b_next[6:2], 3'b000};
-                        b_next      <= b_next + 15'd1;
+                        b_next      <= b_next + 18'd1;
                         bursts_left <= bursts_left - 16'd1;
                     end
                 end

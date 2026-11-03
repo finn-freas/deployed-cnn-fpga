@@ -1,165 +1,147 @@
-# deployed-cnn-fpga
+# roastbot-fpga
 
-[![CI](https://github.com/finn-freas/deployed-cnn-fpga/actions/workflows/ci.yml/badge.svg)](https://github.com/finn-freas/deployed-cnn-fpga/actions/workflows/ci.yml)
+A small language model that roasts you over text, running on a $50 FPGA board (Sipeed Tang
+Nano 20K, Gowin GW2AR-18).
 
-A neural network accelerator (NPU) running a person detector on a $50 FPGA board (Sipeed
-Tang Nano 20K, Gowin GW2AR-18).
+You type a message on your laptop, it goes to the board over USB, and the board writes the
+reply one word piece at a time. The whole model runs on the FPGA: the layers, attention, the
+chat memory, picking each word, and scoring the candidate replies. The laptop just sends your
+message and shows the answer. Everything is built with the open-source tools (Yosys, nextpnr,
+Verilator, cocotb), no vendor IDE.
 
-The model is the MLPerf Tiny Visual Wake Words model. It's a small MobileNet that looks at a
-96x96 color image and says "person" or "no person". Everything is built with the
-open-source tools (Yosys, nextpnr, Verilator, cocotb), no vendor IDE.
+- the model is a 16-layer transformer with 12 million parameters, and it fills the board's
+  8 MB SDRAM
+- a reply takes about **4.8 seconds** (around 25 word pieces per second)
+- the replies on the board match a Python model of the hardware bit for bit
+- the SDRAM runs at 108 MHz and the rest of the design at 54 MHz
 
-- one image takes 243,602 clock cycles, or 256,642 when the weights come from the board's
-  SDRAM. At 54 MHz that's **4.75 ms per image**
-- the main part is an 8x8 grid of multiply-accumulate units, and it uses 77% of the FPGA's
-  logic
-- the design passes timing at 64 MHz and runs at 54 MHz
-
-Everything passes in simulation, including the whole board with models of the flash and
-SDRAM. Testing on the real board is in progress ([docs/bringup.md](docs/bringup.md)).
-
-## How it fits together
-
-![Block diagram: the compiler on the PC writes the model to flash; on the board the weights are copied into SDRAM, and each layer loops from activation memory through the tile engine, MAC array and requantizers back into activation memory](docs/architecture.svg)
-
-## How the NPU works
-
-The model is quantized to 8-bit integers (int8), so all the math on the FPGA is integer math.
-That's a big reason this fits on a small FPGA at all, since floating point would take way
-more logic.
-
-The NPU runs the network one layer at a time, and each layer is one instruction. There are
-only four instructions:
-
-- **CONV**: a normal convolution. Fully connected layers are also done as a CONV.
-- **DWCONV**: a depthwise convolution, where each channel gets its own filter. MobileNet
-  uses a lot of these.
-- **MAXPOOL**
-- **ARGMAX**: picks the biggest output, which is the answer
-
-The instruction format is in [docs/isa.md](docs/isa.md).
-
-**Memory.** The image and the outputs of each layer (the feature maps) stay inside the FPGA
-in a 56 KiB memory. The weights are too big for that, so at power-up they get copied from
-the flash chip into the SDRAM, and each layer reads its weights from there while it runs.
-
-**Getting the data ready.** A convolution looks at a small window of the input for every
-output pixel. The "tile engine" reads these windows out of memory and lines them up for
-the array. Work is split into jobs of 8 output pixels × 8 output channels.
-
-**The MAC array.** This is an 8x8 grid of multiply-accumulate units. Each one multiplies an
-input by a weight and adds the result to a running sum, so the 64 units together compute
-8x8 outputs at once. When a job is done, every unit saves its sum in a spare register and
-starts the next job right away, while the saved sums are read out.
-
-**Depthwise layers.** For DWCONV the same array is used a bit differently. A job is 8
-neighbouring pixels in one row × 8 channels. Each row of units takes its input straight
-from memory as it's read, which works because the inputs already arrive staggered by one
-cycle per row, so no line buffer is needed.
-
-**Back to int8.** After a layer, the sums are much bigger than 8 bits and need to be scaled
-back down to int8 for the next layer. TensorFlow Lite does this with a specific integer multiply and
-rounding, and the NPU does exactly the same, so the results match TFLite bit for bit. Two of these
-"requantizer" units run in parallel.
-
-**Fitting it in.** The FPGA only has about 20K LUTs, so the design has to be small.
-Address calculations use counters and shifts instead of multipliers, and small tables go in
-LUT RAM. On this FPGA a flip-flop can only take its input from the LUT right next to it, so
-a register fed by another register uses up an extra LUT. The utilization report doesn't show
-those, so the design avoids extra register copies.
-
-## The compiler and simulator
-
-`sw/model/export_ir.py` reads an int8 TFLite model and saves its layers in a simple format
-(JSON + npz). Both models are already converted in [`models/ir`](models/ir), so you don't
-need TensorFlow installed.
-
-`sw/npu/compiler.py` turns that into a program for the NPU. It decides how the weights are
-laid out, where each feature map goes in memory, and which rounding each layer needs.
-
-`sw/npu/sim.py` is a simulator written in Python. It does the same integer math as the
-hardware and also predicts how many clock cycles each instruction takes. The testbenches
-check the RTL against it.
-
-```bash
-cd sw && python -m npu.compiler ../models/ir/vww --out ../build/npu_vww
-cd sw && python -m npu.sim ../models/ir/vww --layers     # class, cycles, latency, cost per instruction
+```
+you> fuck you
+roast bot> you're crying because a tiny board laughed at your ass
+you> ur just a bot
+roast bot> so you lost to a tiny little piece of plastic and still can't get a joke? fuckin pathetic 😤
 ```
 
-Without `--image` the simulator uses the model's first golden image, or a mid-grey image if the model has none.
+## The model
+
+It's a Llama-style transformer, sized to fit the board:
+
+| | |
+|-|-|
+| Layers | 16 |
+| Width | 256 (704 in the feed-forward part) |
+| Attention | 8 query heads sharing 2 key/value heads, rotary positions |
+| Vocabulary | 3,072 word pieces (byte-level BPE, with slots for emoji) |
+| Context | 512 word pieces |
+| Weights | 4-bit, with an 8-bit scale per group of 32 |
+| Word table and chat memory | 8-bit |
+| Everything in between | 16-bit integers |
+
+There's no floating point on the FPGA. Softmax, RMSNorm and SiLU use small lookup tables
+instead, so all the math is integer math. `board.py` has the same math in Python, and the
+hardware has to match it exactly.
+
+## How the roast bot is trained
+
+**1. A base model.** It's trained from scratch on about 320 million word pieces of everyday
+conversation (the SODA dataset plus Reddit reply chains from casual subreddits), 1.6 billion
+word pieces in total. This part only teaches it English and how chats go back and forth. The
+last 15% of training uses 4-bit weights, so the model gets used to them before it's packed
+for the board.
+
+**2. Roast chats.** The model is too small to learn roasting from a few examples, so a bigger
+model writes them. A 4-billion-parameter model (`wesjos/Qwen3.5-4B-Fuck`, 4-bit, run locally)
+writes around 10,000 short text chats where someone talks to the bot or argues with it, and
+the bot roasts back. It's shown funny TikTok comments and a bank of comebacks for the tone.
+No slurs, nothing about groups of people, no suicide jokes.
+
+**3. Filtering.** The same writer model reads every chat again and scores how much sense each
+bot line makes after what was said. The worst ones get dropped. Lines that copy an example
+word for word get cut. The emoji at the end of each line get re-picked so they fit what was
+said. "Your mom" comebacks are only kept right after an insult.
+
+**4. Fine-tuning.** The base model is trained on the roast chats, with 5% everyday chat mixed in
+so it doesn't forget how to talk. Training stops when the validation loss stops going down.
+Then the model is quantized and packed into one 8 MB image for the SDRAM.
+
+`scripts/train_roastbot.sh` runs all of it. You need a GPU with 8 GB for the writer model.
+
+## How a reply works
+
+1. **Reading your message.** The laptop splits it into word pieces and sends them over the UART.
+   For each one the board runs all 16 layers and saves its keys and values in the chat memory
+   in SDRAM (about 24 ms per piece).
+2. **Writing.** After the 16 layers, the board multiplies the result by the whole word table
+   to get a score for all 3,072 pieces, picks one at random from the likely ones, and feeds it
+   back in (about 30 ms per piece).
+3. **Scoring.** For every piece it writes, the board also works out how likely the model
+   thought it was (a log-probability), plus a small bonus for words that are rare in normal
+   texting, so "lol ok" doesn't win every time. A reply's score is the average.
+4. **Picking the best.** The board writes up to 6 candidate replies and keeps track of the
+   best average score. The laptop drops candidates that loop or repeat themselves, and
+   "your mom" lines that don't follow an insult or came too soon after the last one.
+5. **Remembering.** The winner goes back into the chat memory, so the bot remembers what it
+   actually said.
+
+## How the hardware works
+
+The model is way too big for the FPGA's own memory, so all 8 MB gets streamed out of the SDRAM
+for every word piece. Almost every design choice is about using that stream well.
+
+The model is a program. `pack.py` turns it into one SDRAM image: the weights, the word
+table, the lookup tables, room for the chat memory, and a short list of operations (matrix
+multiply, normalize, attention for layer 5, add, ...). The engine reads that list and runs it
+once per word piece.
+
+| Block | What it does |
+|-|-|
+| `engine` | reads the operation list and runs the other blocks |
+| `mv_unit` | matrix times vector: 16 4-bit weights per clock straight out of the SDRAM stream, plus the word-table scores |
+| `vec_unit` | everything element-wise: looking up words, RMSNorm, rotary positions, SiLU, adds, writing the chat memory |
+| `attn_unit` | attention over the 8-bit chat memory, 4 query heads per key/value head at once |
+| `sampler` | softmax, the emoji control, picking the word, and the candidate score |
+| `sdram_ctrl`, `stream_rd`, `sdram_cdc` | the SDRAM controller at 108 MHz, the read stream, and the crossing to 54 MHz |
+| `host_link`, `uart` | the USB UART commands: upload the image, run a word piece, read the result |
+
+**Twice the SDRAM clock.** The SDRAM bus is 32 bits wide but the matrix unit wants 64 bits
+every clock, so at 54 MHz it sat idle about half the time. Now the SDRAM controller runs at
+108 MHz, which is exactly one 64-bit word per 54 MHz clock. The two clock domains are
+connected by an async FIFO in block RAM with Gray-code pointers. At 108 MHz the read data
+comes back almost a full clock period late, so the SDRAM clock phase can be shifted in the
+PLL, and at power-up the controller tries every read latency on a test pattern and picks the
+middle of the ones that work. This took a reply from 7.6 s to 4.8 s.
+
+**Fitting it in.** Every multiplier has registers right at its inputs and outputs, because
+nextpnr doesn't time the paths through the DSP blocks. Without that, some builds passed
+timing and still got wrong answers on the board.
 
 ## Results
 
-| Model | Cycles | Time at 54 MHz | Accuracy |
-|-|-:|-:|-|
-| MLPerf Tiny VWW (96x96x3, 29 layers, 7.5M multiply-adds) | 243,602 | 4.5 ms (4.75 ms from SDRAM) | same as TFLite int8 |
-| MNIST CNN | 16,612 | 0.31 ms | same as TFLite int8 |
-
-| Board build (`npu_board_top`) | |
+| Board build (`roastbot_top`) | |
 |-|-|
-| FPGA usage | LUT4 77%, DFF 55%, BSRAM 45/46, 64 DSP multipliers |
-| Max clock after routing | 64.4 MHz for the NPU (runs at 54 MHz), 83.5 MHz for HDMI (runs at 25.2 MHz) |
+| FPGA usage | LUT4 75%, DFF 63%, BSRAM 43/46, 34/48 multipliers |
+| Max clock after routing | 68.9 MHz for the engine (runs at 54 MHz), 126.5 MHz for the SDRAM side (runs at 108 MHz) |
+| SDRAM image | 8,038 KiB of 8,188 (weights 6,144, word table 792, chat memory 1,024) |
+| Speed | reading 24 ms and writing 30 ms per word piece, about 4.8 s per reply |
 
-The first version took 705k cycles per image. It got down to 243k by overlapping work
-that used to happen one step at a time (loading weights, reading out results, starting the
-next job), adding the depthwise mode, and packing the RGB pixels of the first layer together.
+| Test | |
+|-|-|
+| cocotb (Verilator) | `link`, `mv` and `engine` all bit-exact with `board.py` |
+| On the board | 14 of 14 replies identical to the CPU (`scripts/board_check.py --best`) |
 
-## Running it on the board
+16 layers is the limit for this board. An 18-layer model would only fit with 4-bit chat memory
+and a 4-bit word table, and the quality lost to that is about as much as the extra layers add.
 
-For the first time, go through the [bring-up checklist](docs/bringup.md). There's a
-test bitstream plus `sw/board/board_check.py` that check the UART, SDRAM and flash one at a
-time before the NPU goes on.
+## Running it
 
 ```bash
-make -C fpga/tangnano20k TOP=npu_board_top FREQ_MHZ=54        # bitstream (or grab it from CI)
-make -C fpga/tangnano20k TOP=npu_board_top prog               # write it to flash
-cd sw && python -m npu.board ../models/ir/vww --image photo.jpg --program   # model + demo image
-python sw/board/demo.py --port COM5                           # webcam -> board -> verdict
+scripts/build_board.sh                                     # bitstream -> build/board54/roastbot_top.fs
+openFPGALoader -b tangnano20k -f build/board54/roastbot_top.fs   # write it to flash
+./chat.sh --board                                          # chat with it
 ```
 
-At power-up the board copies the weights from flash into SDRAM and classifies the demo
-image. After that, any image sent over the UART (1 Mbaud) gets classified. The HDMI output
-shows the image, the verdict, the score, and latency.
+The first time, `chat.sh --board` uploads the model image to the SDRAM (it checks the
+checksum first, so it only does that once per power-up).
 
-## Command-line tools
-
-| Command | Options |
-|-|-|
-| `python -m npu.compiler MODEL_DIR` | `--out DIR` (default `build/npu`) writes the program, the weight image and the disassembly, and prints the activation and external memory use |
-| `python -m npu.sim MODEL_DIR` | runs one image through the simulator and prints the class, score, cycle count and latency; `--image FILE` (default is the model's first golden image, else mid-grey), `--accuracy N` classifies the first N golden images and reports the accuracy, `--layers` prints cycles, share of the total and multiply-adds per instruction, `--mhz` sets the clock for the latency (default 54) |
-| `python -m npu.board MODEL_DIR` | `--image FILE` demo image (png, jpg or npy; default is the model's first golden image, else mid-grey), `--out FILE` (default `build/board/flash.bin`), `--program` writes it to the board's flash with openFPGALoader, `--pool` for a bitstream that has the MAXPOOL unit |
-| `python sw/board/board_check.py --port PORT` | `--model DIR` also checks the flash contents, `--npu` runs inferences and compares them with the simulator, `--images N` (default 5), `--baud` (default 1000000), `--timeout SECONDS` |
-| `python sw/board/demo.py --port PORT [IMAGE ...]` | classifies the given image files, or the webcam (`--camera N`, default 0) if there are none; `q` quits |
-
-`MODEL_DIR` is a directory with `ir.json` and `ir.npz`, such as `models/ir/vww`.
-
-## Building and testing
-
-```bash
-make env                 # .venv (simulation) and .venv-tf (TFLite export)
-make test-sw             # ISA, requant, compiler and simulator tests
-make test-rtl            # cocotb + Verilator (needs OSS CAD Suite in ~/oss-cad-suite)
-```
-
-The hardware tests check every layer's output against TFLite, check the cycle counts against
-the simulator, run random small networks, and simulate the whole board. GitHub Actions runs
-all of it and builds the bitstreams.
-
-## Layout
-
-```
-rtl/npu/      the NPU: core, tile engine, MAC array, requant, pool
-rtl/board/    board system: flash boot, SDRAM controller, UART, HDMI overlay, bring-up test
-sw/npu/       ISA, compiler, simulator, TFLite-exact quantization, flash images
-sw/board/     board check and webcam demo
-sw/model/     model export (TFLite -> IR), training script
-models/       the VWW and MNIST TFLite models and their IR
-tb/           cocotb testbenches
-fpga/         Tang Nano 20K constraints and build
-docs/         ISA reference, bring-up checklist
-```
-
-## License
-
-MIT, see [LICENSE](LICENSE). The MLPerf Tiny VWW model files in `models/vww/` are from
-[mlcommons/tiny](https://github.com/mlcommons/tiny) (Apache License 2.0).
+`./chat.sh` without `--board` runs the same integer model on the CPU, with the same replies.
+`scripts/sim.sh link|mv|engine` runs the RTL tests.

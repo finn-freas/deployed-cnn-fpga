@@ -1,20 +1,7 @@
-# Python
-.venv/
-.venv-tf/
-.venv-yolo/
+data/
+models/
+build/
+*.log
 __pycache__/
-*.pyc
-
-# Simulation / build outputs
 sim_build/
 results.xml
-*.result.xml
-*.vcd
-*.fst
-build/
-*.fs
-*.json.pnr
-fpga/tangnano20k/build_*.log
-
-# Local planning notes
-.gateflow/
