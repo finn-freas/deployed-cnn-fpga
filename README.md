@@ -15,6 +15,7 @@ roast bot> so you lost to a tiny little piece of plastic and still can't get a j
 It's a 16-layer, 12-million-parameter language model, and the FPGA does all of it.
 The laptop just sends your message over USB and prints the answer (but you don't need a laptop!)
 
+- **12,067,072 parameters** (16 layers, 4-bit weights)
 - a reply takes about **6 seconds**
 - the model fills the board's whole 8 MB of memory
 - the board's replies match a Python model of the hardware bit for bit
