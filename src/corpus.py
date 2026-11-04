@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 RAW, OUT = ROOT / "data" / "raw", ROOT / "data" / "corpus"
 MAX_CHARS = 280
 URL = re.compile(r"https?://|www\.|\]\(|&gt;|&amp;|/u/|/r/|\bu/|\br/", re.I)

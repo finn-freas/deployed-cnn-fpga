@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 CORPUS, TOK = ROOT / "data" / "corpus", ROOT / "data" / "tok"
 VOCAB = 3072
 N_RESERVED = 128

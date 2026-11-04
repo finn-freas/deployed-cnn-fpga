@@ -43,15 +43,22 @@ timing on the board with `scripts/sdram_diag.py` before you trust it.
 
 ## What's in here
 
-| | |
+| Folder | What it has |
 |-|-|
-| `bitstream/roastbot.fs` | the bitstream (14 of 14 replies identical to the CPU, plus 14 of 14 insults, SDRAM clock phase 4) |
-| `models/pr_board.pkl.xz` | the quantized model the board runs (unpacked the first time you chat) |
-| `models/pr.pt` | the same model before quantizing, in PyTorch |
-| `models/pre_b16.pt` | the base model, before it learned to roast |
-| `data/people/pr/` | the ~8,100 roast chats it was fine-tuned on |
+| `src/` | the Python side. `board.py` is the reference model: the exact integer math the hardware does, used to check the board bit for bit. `pack.py` packs a model into the 8 MB SDRAM image. `engine.py` runs that image the way the hardware engine does, op by op, and counts the clock cycles. `link.py` talks to the board over USB. `chat.py` is the chat program (picking replies, "your mom" rules, the block list). `tok.py` and `corpus.py` build the tokenizer and the everyday-chat data, `train.py` trains the base model, and `finetune.py` teaches it to roast |
+| `rtl/` | the hardware in SystemVerilog: the engine and its units (matrix, vector, attention, sampler, SDRAM read stream) |
+| `rtl/board/` | the parts specific to the Tang Nano 20K: the top level, SDRAM controller, clock crossing, PLLs, UART, pin constraints and clock constraints |
+| `rtl/sim/` | simulation tops and an SDRAM model, for the tests in `tb/` |
+| `tb/` | cocotb testbenches that run the hardware in Verilator and check it against `src/board.py` (run with `scripts/sim.sh link`, `mv` or `engine`) |
+| `tests/` | plain Python unit tests (pytest) for the USB link framing and the tokenizer |
+| `scripts/` | everything else you run: building the bitstream (`build_board.sh`), checking the board (`board_check.py`, `sdram_diag.py`), the whole training recipe (`train_roastbot.sh`) and its steps (writing roast chats, filtering them, emoji, distillation targets), and evaluating replies |
+| `models/` | the trained models: `pr_board.pkl.xz` is the quantized model the board runs (unpacked the first time you chat), `pr.pt` is the same model before quantizing, and `pre_b16.pt` is the base model before it learned to roast |
+| `data/people/pr/` | the ~8,100 roast chats it was fine-tuned on, all written by the writer model |
 | `data/tok/` | the tokenizer |
-| `data/style/` | the TikTok comments and comebacks shown to the writer model |
-| `rtl/` | the hardware |
+| `data/style/` | the TikTok comments and comebacks shown to the writer model for the tone |
+| `bitstream/` | `roastbot.fs`, the tested bitstream (14 of 14 replies identical to the CPU, plus 14 of 14 insults, SDRAM clock phase 4) |
+| `docs/` | [how it works](docs/how-it-works.md): the model, the training, the hardware, and the results |
+
+`chat.sh` at the top just runs `src/chat.py`.
 
 To train your own from scratch, run `scripts/train_roastbot.sh` (needs a GPU with 8 GB).

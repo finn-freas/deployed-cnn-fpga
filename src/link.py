@@ -166,7 +166,7 @@ def main():
         print(f"\nuploaded {len(img) / 2 ** 20:.2f} MB in {dt:.1f}s ({len(img) / dt / 1e3:.0f} KB/s), "
               f"checksum {'OK' if want == got else f'MISMATCH {got:#x} != {want:#x}'}")
     else:
-        sys.exit("usage: python link.py ping | load models/pr_board")
+        sys.exit("usage: python src/link.py ping | load models/pr_board")
 
 
 if __name__ == "__main__":

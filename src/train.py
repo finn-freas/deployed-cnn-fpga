@@ -13,7 +13,7 @@ import torch.nn.functional as F
 import board as B
 import tok as T
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 SIZES = {
     "s": (192, 512, 6, 6, 2),
     "m": (256, 704, 8, 8, 2),

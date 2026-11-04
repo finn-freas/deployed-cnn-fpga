@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import tok
 

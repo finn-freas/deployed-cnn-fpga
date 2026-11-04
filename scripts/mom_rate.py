@@ -1,5 +1,5 @@
 import os, re, sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 import chat, tok as T
 M = re.compile(r"\b(your|ur|yo|you.re) (mom|mama|momma|moms)\b")
 INS = ["fuck you", "shut up", "ur so dumb", "ur trash bro", "i hate you", "ur just a bot", "stfu", "ur not funny",

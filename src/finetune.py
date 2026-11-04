@@ -14,7 +14,7 @@ import board as B
 import tok as T
 from train import Net, Stream, chat_samples
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def encode_sessions(tok, path):

@@ -6,7 +6,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parent.parent
 MDIR = ROOT / "models"
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 import chat
 import tok as T
 from finetune import encode_sessions

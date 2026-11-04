@@ -29,7 +29,7 @@ through, and the up matrix gives the values. SiLU is close to ReLU for big input
 around zero, and the gating works better than a plain activation at the same size.
 
 There's no floating point on the FPGA. Softmax, RMSNorm and the sigmoid inside SiLU use small
-lookup tables instead, so all the math is integer math. `board.py` has the same math in
+lookup tables instead, so all the math is integer math. `src/board.py` has the same math in
 Python, and the hardware has to match it exactly.
 
 ## How the roast bot is trained
@@ -163,7 +163,7 @@ picks within that class.
 The model is way too big for the FPGA's own memory, so all 8 MB gets streamed out of the SDRAM
 for every word piece. Almost every design choice is about using that stream well.
 
-The model is a program. `pack.py` turns it into one SDRAM image: the weights, the word
+The model is a program. `src/pack.py` turns it into one SDRAM image: the weights, the word
 table, the lookup tables, room for the chat memory, and a short list of operations (matrix
 multiply, normalize, attention for layer 5, add, ...). The engine reads that list and runs it
 once per word piece.
@@ -247,7 +247,7 @@ the LUTs, so about half the placement seeds don't place, and each new build trie
 
 | Test | |
 |-|-|
-| cocotb (Verilator) | `link`, `mv` and `engine` all bit-exact with `board.py` |
+| cocotb (Verilator) | `link`, `mv` and `engine` all bit-exact with `src/board.py` |
 | On the board | 14 of 14 replies identical to the CPU (`scripts/board_check.py --best`), and 14 of 14 insults (`--argue`) |
 
 ### Why not bigger
@@ -260,13 +260,13 @@ layers would also make every word piece about 6% slower each.
 
 ## Testing
 
-`board.py` is the reference. It does the exact integer math of the hardware, including the
+`src/board.py` is the reference. It does the exact integer math of the hardware, including the
 rounding, the lookup tables and the random numbers, so the same seed gives the same reply on
 the CPU and on the board.
 
 - `scripts/sim.sh link|mv|engine` runs the cocotb tests in Verilator. The engine test runs a
   whole word piece, then samples and scores two candidates, and checks every register against
-  `board.py`.
+  `src/board.py`.
 - `scripts/board_check.py --best` sends 14 messages to the board and to the CPU and checks that
   every reply, every candidate score and every pick is the same. Any change to the RTL has to
   pass it.

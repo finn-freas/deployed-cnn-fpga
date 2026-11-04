@@ -5,7 +5,7 @@ from pathlib import Path
 import torch
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 from chat import AGGRO
 from gen_dialogs import MOM_RE
