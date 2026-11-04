@@ -102,7 +102,7 @@ async def test_engine(dut):
 
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     cocotb.start_soon(Clock(dut.clk_f, int(os.environ.get("FB_FCLK_PS", "5000")), unit="ps").start())
-    for s in ["init", "go", "logits", "pos_we", "seed_we", "emo_we", "step", "step_go", "best_clr", "cand_end",
+    for s in ["init", "go", "logits", "forced", "ftok", "wbase", "pos_we", "seed_we", "emo_we", "step", "step_go", "best_clr", "cand_end",
               "cand_keep"]:
         getattr(dut, s).value = 0
     dut.tok.value, dut.dbg_row.value, dut.dbg_logit.value, dut.pos_d.value = 0, 0, 0, 0
@@ -196,3 +196,31 @@ async def test_engine(dut):
         assert await best(dut, "cand_end", keep=True) == (k, max(s1, s2), 1)
         assert await best(dut, "best_clr") == (0, 0, 0)
         dut._log.info(f"second candidate {want2} (score {s2}): best of the two is candidate {k}, bit-exact")
+
+        base = 1
+        for q, (t2, ft) in enumerate([(5, 700), (9, int(np.flatnonzero(mask)[0])), (11, None)]):
+            at = pos + 1 + q
+            want = ref.run(t2, at, logits=True, base=base)
+            dut.wbase.value, dut.tok.value, dut.logits.value = base, t2, 1
+            dut.forced.value, dut.ftok.value = int(ft is not None), ft or 0
+            dut.go.value = 1
+            await RisingEdge(dut.clk)
+            dut.go.value = 0
+            await FallingEdge(dut.busy)
+            got = await read_logits(dut, len(want))
+            assert (got == want).all(), f"window {base}: {int((got != want).sum())} logits differ at pos {at}"
+            em, total = B.class_mass(got, mask, p["fmt"]["logit"], p["exp2"])
+            assert (int(dut.s_em.value), int(dut.s_total.value)) == (em, total)
+            if ft is not None:
+                sx = B.token_score(got, ft, p["fmt"]["logit"], total, w)
+                assert (int(dut.s_tok.value), sgn(dut.s_score.value, 24)) == (ft, sx), "forced token score"
+            else:
+                g = 256 if mask[t2] else gain_q
+                w3 = B.pick(got, inv_t, cut_q, rng, p["gumbel"], mask, g, p["fmt"]["logit"], p["exp2"], bias)
+                assert int(dut.s_tok.value) == w3, f"after forced: sampled {int(dut.s_tok.value)}, want {w3}"
+                s3 = B.token_score(got, w3, p["fmt"]["logit"], total, w)
+            dut._log.info(f"window from {base}: token {t2} at pos {at}, all logits bit-exact, "
+                          + (f"forced {ft} scored {sx}" if ft is not None else "sampled (the RNG skipped forced steps)"))
+        assert await best(dut, "cand_end", keep=True) == (0, s3, 1)
+        dut.wbase.value, dut.forced.value = 0, 0
+        dut._log.info("forced scores left the candidate books alone")

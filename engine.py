@@ -90,7 +90,7 @@ class Engine:
         self.cycles += rows * (rw / WORDS_PER_CYCLE + ROW_OVERHEAD)
         return B.sat16(out)
 
-    def run(self, tok, pos, logits=True, trace=None):
+    def run(self, tok, pos, logits=True, trace=None, base=0):
         TR = P.TABLE_ROW
         for word in self.prog:
             word = int(word)
@@ -124,9 +124,10 @@ class Engine:
                 dst = None
             elif op == "ATTN":
                 sk, sv = rows & 15, rows >> 4 & 15
-                K = self.unpack(self.read(self.kv_addr(aux, 0), (pos + 1) * self.kvw), 8).reshape(pos + 1, -1)
-                vw = np.stack([self.read(self.kv_addr(aux, 1) + w * self.seq, pos + 1) for w in range(self.kvw)], 1)
-                V = self.unpack(vw.reshape(-1), 8).reshape(pos + 1, -1)
+                n = pos + 1 - base
+                K = self.unpack(self.read(self.kv_addr(aux, 0) + base * self.kvw, n * self.kvw), 8).reshape(n, -1)
+                vw = np.stack([self.read(self.kv_addr(aux, 1) + w * self.seq + base, n) for w in range(self.kvw)], 1)
+                V = self.unpack(vw.reshape(-1), 8).reshape(n, -1)
                 q = g(src)
                 rep = self.heads // self.kv_heads
                 att = np.zeros(self.dim, np.int64)

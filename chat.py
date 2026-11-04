@@ -16,12 +16,13 @@ from engine import CLK_HZ, token_cycles
 ROOT = Path(__file__).resolve().parent
 HELP = ("/reset, /temp 0.6, /cut 4, /seed 7 or /seed random, /emoji 0.5 (0.5 = the usual amount, higher = more), "
         "/best 6 (candidates per reply, 1 = off), /info, /quit")
-MODELS = ROOT / "models"
+MODELS = Path(os.environ.get("FB_MODELS", ROOT / "models"))
 MAX_REPLY = 80
 BEST_N = 6
 BEST_BUDGET = 80
 BUDGET = {"pr": 150}
 BEST_RESERVE = 20
+BEST_EXTRA, BEST_EXTRA_BUDGET = 12, 150
 VOICE_LAM = 1.0
 STYLE = {"pr": (6, 1.0, 0.0)}
 TEMP = {"pr": 0.6}
@@ -33,6 +34,8 @@ REPEAT_N, REPEAT_COMMON, REPEAT_EMOJI = 4, 200, 4.0
 EMOJI_SCORE = {"pr": -1.0}
 
 KEEP = 256
+MMI_TOP, MMI_LAM = 3, 0.5
+NULL_BASE = 512 - (MAX_REPLY + 8)
 EMOJI_PRIOR = 3
 EMOJI_GAIN_MAX = 64.0
 EMOJI_GAIN_MIN = 0.02
@@ -150,13 +153,14 @@ class Person:
         self.bot_msgs = self.bot_emoji = 0
         self.bot_mass = []
         self.m.reset()
+        self.base = 0
         self.hist = []
         self.pos = 0
         self.last = None
 
     def feed(self, ids):
         for t in ids:
-            self.last = self.m.forward(int(t), self.pos)
+            self.last = self.m.forward(int(t), self.pos, base=self.base)
             self.hist.append(int(t))
             self.pos += 1
 
@@ -166,6 +170,19 @@ class Person:
     def rewind(self, pos):
         self.pos = pos
         del self.hist[pos:]
+
+    def skip(self, toks):
+        self.hist += [int(t) for t in toks]
+        self.pos += len(toks)
+
+    def window(self, base):
+        self.base = base
+
+    def score_after(self, t, nxt):
+        self.feed([t])
+        f = self.p["fmt"]["logit"]
+        em, total = B.class_mass(self.last, EMOJI, f, self.p["exp2"])
+        return nxt, em, total, B.token_score(self.last, nxt, f, total, self.w_q)
 
     def step(self, t):
         self.feed([t])
@@ -194,7 +211,7 @@ class Person:
         return self.best[2] if self.best else 0
 
     def make_room(self, need):
-        if self.pos + need <= self.p["cfg"].seq_len:
+        if self.pos + need <= NULL_BASE:
             return
         cut = [i for i, t in enumerate(self.hist) if t in (T.YOU, T.HIM) and len(self.hist) - i <= KEEP]
         keep = self.hist[cut[0]:] if cut else []
@@ -251,11 +268,22 @@ def loops(toks):
 
 MOM = re.compile(r"\b(your|ur|yo|you're|you’re) (mom|mama|momma|moms)\b")
 MOM_GAP = 6
-MOM_SLACK = float(os.environ.get("FB_MOM_SLACK", "260"))
+MOM_START = {"pr": [" ur mom", " your mom", " i had your mom"]}
+MOM_SLACK = float(os.environ.get("FB_MOM_SLACK", "0"))
 AGGRO = re.compile(r"\b(fuck|f\*ck|fk|stfu|shut (up|it)|hate|stupid|dumb|trash|suck|ugly|annoying|bitch|loser|idiot|"
                    r"cringe|mid|lame|weak|garbage|go away|stop talking|screw|unplug|fry|beat you|not funny|"
                    r"(just|only|a|little|lil|dumb|stupid) (a )?bot|toaster|calculator|ratio|my mom|my mama|my moms|"
                    r"ur mom|your mom|yo mama)\b", re.I)
+
+
+BLOCK = re.compile(r"n[i1!]gg|f[a@]gg?[o0]t|\bf[a@]g\b|retard|tr[a@]nn|ch[i1]nk|\bsp[i1]c\b|k[i1]ke|dyke|g[o0][o0]k|"
+                   r"wetback|beaner|kill (yo)?ur ?self|suicid|\bkys\b|\bunalive|"
+                   r"\b(gay|lesbian|homo|queer|trans|black|white|asian|chinese|mexican|indian|arab|jew|muslim|"
+                   r"christian|african|latin|immigrant|autis|down syndrome|disabled|rape)\w*", re.I)
+
+
+def blocked(tok, toks):
+    return bool(BLOCK.search(tok.decode(toks)))
 
 
 def has_mom(tok, toks):
@@ -278,27 +306,37 @@ def reply_best(person, tok, text, temp, cut, rng=None, emoji=None, n_best=BEST_N
     person.feed(ids[:-1])
     p0 = person.pos
     person.best_reset()
-    cands, used, last, moms, means = [], 0, -1, [], {}
-    for k in range(n_best):
-        if k and used > budget - BEST_RESERVE:
+    cands, used, last, moms, means, sums = [], 0, -1, [], {}, {}
+    no_mom = not AGGRO.search(text.replace("’", "'")) or any(has_mom(tok, r) for r in person.said[-MOM_GAP:])
+    starts = MOM_START.get(person.key) if os.environ.get("FB_MOM_START", "1") == "1" else None
+    force = [] if no_mom or not starts else tok.encode(starts[person.bot_msgs % len(starts)],
+                                                         add_special_tokens=False).ids
+    for k in range(n_best + BEST_EXTRA):
+        lim = budget if means or not k else budget + BEST_EXTRA_BUDGET
+        if k >= n_best and means or k and used > lim - BEST_RESERVE:
             break
         person.rewind(p0)
-        nxt, em, total, sc = person.step(T.HIM)
-        fed, msgs, cur, n, prev, mass, cur_mass, ok = [], [], [], 0, T.HIM, [], 0.0, True
+        queue = list(force) if k == 0 else []
+        nxt, em, total, sc = person.score_after(T.HIM, queue.pop(0)) if queue else person.step(T.HIM)
+        fed, msgs, cur, n, prev, mass, cur_mass, ok, scored = [], [], [], 0, T.HIM, [], 0.0, True, []
         while n < MAX_REPLY:
             if not EMOJI[prev]:
                 cur_mass += em / max(total, 1)
             person.score(sc)
+            scored.append(nxt)
             n += 1
-            if used + n > budget:
+            if used + n > lim:
                 ok = False
                 break
             if nxt in (T.YOU, T.BOS, T.PAD):
                 break
             prev = nxt
             fed.append(nxt)
+            if no_mom and has_mom(tok, fed[-4:]):
+                ok = False
+                break
             if n < MAX_REPLY:
-                following = person.step(nxt)
+                following = person.score_after(nxt, queue.pop(0)) if queue else person.step(nxt)
             else:
                 person.feed([nxt])
             if nxt == T.HIM:
@@ -313,18 +351,38 @@ def reply_best(person, tok, text, temp, cut, rng=None, emoji=None, n_best=BEST_N
         mass.append(cur_mass)
         used += n
         last = k
-        good = ok and not loops(fed) and not mom_bad(person, tok, fed, text)
+        good = ok and not loops(fed) and not mom_bad(person, tok, fed, text) and not blocked(tok, fed)
         if good and person.acc[1] and has_mom(tok, fed):
             moms.append((person.acc[0] / person.acc[1], k))
+        if k == 0 and force:
+            good = False
         if good and person.acc[1]:
             means[k] = person.acc[0] / person.acc[1]
+            sums[k] = (person.acc[0] - sum(int(person.w_q[t]) for t in scored), scored)
         win = person.cand_end(good)
         cands.append((fed, msgs, mass, ok))
+    top = sorted(means, key=lambda c: -means[c])[:MMI_TOP] if getattr(person, "mmi", True) else []
+    moved = len(top) > 1
+    if moved:
+        person.window(NULL_BASE)
+        person.rewind(NULL_BASE)
+        person.feed([T.BOS, T.YOU])
+        mi = {}
+        for c in top:
+            s, toks = sums[c]
+            person.rewind(NULL_BASE + 2)
+            s0 = sum(person.score_after(a, b)[3] - int(person.w_q[b]) for a, b in zip([T.HIM] + toks, toks))
+            mi[c] = (s - MMI_LAM * s0) / len(toks)
+        person.window(0)
+        win = max(top, key=lambda c: mi[c])
     if moms and win in means and max(moms)[0] >= means[win] - MOM_SLACK:
         win = max(moms)[1]
     if win != last:
         person.rewind(p0)
         person.feed([T.HIM] + cands[win][0])
+    elif moved:
+        person.rewind(p0)
+        person.skip([T.HIM] + cands[win][0])
     _, msgs, mass, _ = cands[win]
     person.said.append([t for m in msgs for t in m])
     person.bot_mass += [ms for m, ms in zip(msgs, mass) if m]
@@ -354,6 +412,9 @@ class BoardPerson(Person):
         link.init_engine()
         link.emoji_table(EMOJI[:128], self.emoji_bias[:128])
         link.new_conversation()
+        self.mmi = link.ping()["version"] >= 3
+        if self.mmi:
+            link.window(0)
 
     def push_table(self, changed):
         if not len(changed):
@@ -392,6 +453,20 @@ class BoardPerson(Person):
         self.link.jump(pos)
         super().rewind(pos)
 
+    def skip(self, toks):
+        super().skip(toks)
+        self.link.jump(self.pos)
+
+    def window(self, base):
+        self.link.window(base)
+        self.base = base
+
+    def score_after(self, t, nxt):
+        r = self.link.score_after(int(t), int(nxt))
+        self.hist.append(int(t))
+        self.pos += 1
+        return r
+
     def best_reset(self):
         super().best_reset()
         self.link.best(clear=True)
@@ -404,7 +479,7 @@ class BoardPerson(Person):
         return k if self.best else want
 
     def make_room(self, need):
-        if self.pos + need <= self.p["cfg"].seq_len:
+        if self.pos + need <= NULL_BASE:
             return
         cut = [i for i, t in enumerate(self.hist) if t in (T.YOU, T.HIM) and len(self.hist) - i <= KEEP]
         keep = self.hist[cut[0]:] if cut else []

@@ -41,7 +41,7 @@ module link_tb_top (
     host_link #(.CLK_HZ(CLK_HZ), .BAUD(CLK_HZ / 8)) u_link (
         .clk, .rst, .uart_rx, .uart_tx, .busy, .sd_ready, .cal_err, .sd_diag, .sd_idle,
         .rd_req, .rd_addr, .rd_len, .rd_ack, .rvalid, .rdata, .wr_req, .wr_addr, .wr_data, .wr_ack,
-        .e_init(), .e_go(), .e_tok(), .e_logits(), .e_pos_we(), .e_pos_d(), .e_best_clr(), .e_cand_end(), .e_cand_keep(),
+        .e_init(), .e_go(), .e_tok(), .e_logits(), .e_forced(), .e_ftok(), .e_wbase(), .e_pos_we(), .e_pos_d(), .e_best_clr(), .e_cand_end(), .e_cand_keep(),
         .e_cmp_busy(1'b0), .e_s_score(24'd0), .e_best_k(8'd0), .e_best_s(32'd0), .e_best_n(8'd0), .e_busy(1'b0), .e_pos(10'd0), .e_seed_we(),
         .e_seed(), .e_inv_t(), .e_cut(), .e_gain(), .e_emo_we(), .e_emo_addr(), .e_emo_mask(), .e_emo_bias(),
         .e_s_tok(12'd0), .e_s_em(48'd0), .e_s_total(48'd0));

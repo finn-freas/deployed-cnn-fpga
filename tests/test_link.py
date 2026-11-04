@@ -96,10 +96,24 @@ def test_settings_clamps_gain():
 def test_feed_and_step():
     lk = FakeLink([b"a" + struct.pack("<H", 42)])
     assert lk.feed(300) == 42
-    assert lk.sent == struct.pack("<cBH", b"F", 0, 300)
+    assert lk.sent == struct.pack("<cBHH", b"F", 0, 300, 0)
     reply = b"f" + struct.pack("<H", 7) + (1).to_bytes(6, "little") + (2).to_bytes(6, "little") + (-3).to_bytes(3, "little", signed=True)
     lk = FakeLink([reply])
     assert lk.step(1) == (7, 1, 2, -3)
+    assert lk.sent == struct.pack("<cBHH", b"F", 1, 1, 0)
+
+
+def test_score_after_forces_the_token():
+    reply = b"f" + struct.pack("<H", 9) + (1).to_bytes(6, "little") + (2).to_bytes(6, "little") + (-5).to_bytes(3, "little", signed=True)
+    lk = FakeLink([reply])
+    assert lk.score_after(4, 9) == (9, 1, 2, -5)
+    assert lk.sent == struct.pack("<cBHH", b"F", 2, 4, 9)
+
+
+def test_window_frame():
+    lk = FakeLink([b"x"])
+    lk.window(424)
+    assert lk.sent == b"X" + struct.pack("<H", 424)
 
 
 def test_best_flags_and_reply():

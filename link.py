@@ -109,19 +109,28 @@ class Link:
         self._ack(b"E" + body, b"e")
 
     def feed(self, tok):
-        self.send(struct.pack("<cBH", b"F", 0, tok))
+        self.send(struct.pack("<cBHH", b"F", 0, tok, 0))
         r = self.recv(3)
         if r[0:1] != b"a":
             raise IOError(f"feed: bad reply {r!r}")
         return struct.unpack("<H", r[1:3])[0]
 
     def step(self, tok):
-        self.send(struct.pack("<cBH", b"F", 1, tok))
+        return self._f(1, tok, 0)
+
+    def score_after(self, tok, nxt):
+        return self._f(2, tok, nxt)
+
+    def _f(self, flags, tok, nxt):
+        self.send(struct.pack("<cBHH", b"F", flags, tok, nxt))
         r = self.recv(18)
         if r[0:1] != b"f":
             raise IOError(f"step: bad reply {r!r}")
         return (struct.unpack("<H", r[1:3])[0], int.from_bytes(r[3:9], "little"),
                 int.from_bytes(r[9:15], "little"), int.from_bytes(r[15:18], "little", signed=True))
+
+    def window(self, base):
+        self._ack(b"X" + struct.pack("<H", base), b"x")
 
     def jump(self, pos):
         self._ack(b"J" + struct.pack("<H", pos), b"j")

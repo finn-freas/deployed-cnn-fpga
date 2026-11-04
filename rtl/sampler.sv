@@ -15,6 +15,8 @@ module sampler #(
     input  wire logic               l_valid,
     input  wire logic signed [15:0] l_data,
     input  wire logic               go,
+    input  wire logic               forced,
+    input  wire logic [11:0]        ftok,
     input  wire logic [11:0]        n,
     input  wire logic [11:0]        inv_t,
     input  wire logic [15:0]        cut,
@@ -106,6 +108,7 @@ module sampler #(
     logic signed [33:0] sa;
     logic [7:0]  na;
     logic        c_keep;
+    logic        fc;
 
     assign cmp_busy = (st == S_CMP);
     assign w_addr   = tok;
@@ -184,6 +187,7 @@ module sampler #(
                     max_e  <= 18'sh20000;
                     max_ne <= 18'sh20000;
                     g      <= is_emo(prev) ? 16'd256 : gain;
+                    fc     <= forced;
                     st     <= S_A;
                 end
 
@@ -214,7 +218,10 @@ module sampler #(
                         total <= total + ev;
                         if (m4) em <= em + ev;
                     end
-                    if (i == n && !v1 && !v2 && !v3 && !v4) st <= S_DEC;
+                    if (i == n && !v1 && !v2 && !v3 && !v4) begin
+                        if (fc) tok <= ftok;
+                        st <= fc ? S_SC0 : S_DEC;
+                    end
                 end
 
                 S_DEC: begin
@@ -297,8 +304,10 @@ module sampler #(
                     logic signed [17:0] sc;
                     sc = 18'(w_data) - 18'(d1r) - 18'({lp, ex_data[23:16]});
                     score <= 24'(sc);
-                    acc_s <= acc_s + 26'(sc);
-                    acc_n <= acc_n + 8'd1;
+                    if (!fc) begin
+                        acc_s <= acc_s + 26'(sc);
+                        acc_n <= acc_n + 8'd1;
+                    end
                     st    <= S_END;
                 end
 

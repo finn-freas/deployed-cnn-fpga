@@ -9,6 +9,9 @@ module engine_tb_top (
     input  wire logic         go,
     input  wire logic [11:0]  tok,
     input  wire logic         logits,
+    input  wire logic         forced,
+    input  wire logic [11:0]  ftok,
+    input  wire logic [9:0]   wbase,
     input  wire logic         pos_we,
     input  wire logic [9:0]   pos_d,
     output      logic         busy,
@@ -74,7 +77,7 @@ module engine_tb_top (
     sdram_model #(.INIT("../build/sim/engine_mem.hex")) u_mem (
         .clk(clk_f), .cke, .cs_n, .ras_n, .cas_n, .we_n, .ba, .addr, .dqm, .dq_i(dq_c), .dq_o(dq_m), .dq_oe(dq_oe_m));
 
-    engine u_eng (.clk, .rst, .init, .go, .tok, .logits, .pos_we, .pos_d, .busy, .ready, .pos,
+    engine u_eng (.clk, .rst, .init, .go, .tok, .logits, .forced, .ftok, .wbase, .pos_we, .pos_d, .busy, .ready, .pos,
                   .seed_we, .seed, .inv_t, .cut, .gain, .emo_we, .emo_addr, .emo_mask, .emo_bias(emo_bias),
                   .s_tok, .s_em, .s_total, .s_score, .best_clr, .cand_end, .cand_keep, .cmp_busy, .best_k,
                   .best_s, .best_n, .rd_row(dbg_row), .rd_vm(dbg_vm), .rd_logit(dbg_logit), .rd_l(dbg_l),

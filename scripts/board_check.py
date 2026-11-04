@@ -10,6 +10,7 @@ from link import Link
 
 PROMPTS = ["how are you", "what are you doing", "did you eat yet", "lol ok", "you coming tonight?",
            "where are you", "want to get food later"]
+ARGUE = ["yo", "fuck you", "ur so dumb", "what are you doing", "shut up", "i hate you", "ur a toaster"]
 
 
 def main():
@@ -27,7 +28,7 @@ def main():
         brd.reset()
         rng = chat.make_rng(seed)
         link.seed(chat.make_rng(seed).x)
-        for q in PROMPTS:
+        for q in ARGUE if "--argue" in sys.argv else PROMPTS:
             t0 = time.time()
             if best:
                 a, _, wa = chat.reply_best(cpu, tok, q, chat.TEMP.get(key, 0.8), 4.0, rng, n_best=cpu.n_best)

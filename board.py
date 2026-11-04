@@ -312,7 +312,7 @@ class IntModel:
         self.kc = np.zeros((c.n_layers, c.seq_len, c.kv_dim), np.int64)
         self.vc = np.zeros((c.n_layers, c.seq_len, c.kv_dim), np.int64)
 
-    def forward(self, tok, pos, logits=True):
+    def forward(self, tok, pos, logits=True, base=0):
         p, c, f = self.p, self.cfg, self.p["fmt"]
         hs, rep = c.head_size, c.n_heads // c.n_kv_heads
         t_shift = f["q"] + f["k"] - F_T
@@ -332,8 +332,8 @@ class IntModel:
             att = np.zeros(c.dim, np.int64)
             for h in range(c.n_heads):
                 sl = slice((h // rep) * hs, (h // rep + 1) * hs)
-                att[h * hs:(h + 1) * hs] = attention_head(q[h * hs:(h + 1) * hs], self.kc[l, :pos + 1, sl],
-                                                          self.vc[l, :pos + 1, sl], p["exp2"], t_shift - sk, sv)
+                att[h * hs:(h + 1) * hs] = attention_head(q[h * hs:(h + 1) * hs], self.kc[l, base:pos + 1, sl],
+                                                          self.vc[l, base:pos + 1, sl], p["exp2"], t_shift - sk, sv)
             x = sat16(x + matvec(L["wo"], sat16(att)))
             u = rmsnorm(x, p["eps"], p["rsqrt"])
             hb = silu_mul(matvec(L["w1"], u), matvec(L["w3"], u), p["sigmoid"], h_shift)

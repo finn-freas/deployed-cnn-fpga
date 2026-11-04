@@ -8,6 +8,9 @@ module engine (
     input  wire logic         go,
     input  wire logic [11:0]  tok,
     input  wire logic         logits,
+    input  wire logic         forced,
+    input  wire logic [11:0]  ftok,
+    input  wire logic [9:0]   wbase,
     input  wire logic         pos_we,
     input  wire logic [9:0]   pos_d,
     output      logic         busy,
@@ -148,9 +151,13 @@ module engine (
     assign f_addr = op_word[59:40];
 
     logic [11:0] t_tok;
-    logic        t_logits;
+    logic        t_logits, t_forced;
+    logic [11:0] t_ftok;
     logic [4:0]  c_kvl_sh;
     wire  [19:0] kv_l = c_kv + (20'(f_aux) << c_kvl_sh);
+    wire  [9:0]  kv_p = (f_op == O_ATTN) ? wbase : pos;
+    wire  [19:0] kv_k = kv_l + ((c_nkv == 2'd2) ? 20'(kv_p) << 3 : 20'(kv_p) << 2);
+    wire  [19:0] kv_v = kv_l + c_kvhalf + 20'(kv_p);
 
     logic        v_start, v_done, v_sr_start, v_s_ready, v_vm_we, v_wr_req;
     logic [7:0]  v_abase, v_bbase, v_obase, v_vm_ra, v_vm_wa;
@@ -182,12 +189,12 @@ module engine (
     logic        a_start, a_done, a_sr_start, a_s_ready, a_vm_we;
     logic [7:0]  a_vm_ra, a_vm_wa;
     logic [15:0] a_vm_wm;
-    logic [19:0] a_sr_addr, a_sr_len, a_kaddr;
+    logic [19:0] a_sr_addr, a_sr_len;
     logic [5:0]  a_tsh;
     logic [3:0]  a_vsh;
     logic [15:0] a_vm_wd;
-    attn_unit u_att (.clk, .rst, .start(a_start), .qbase(base(f_src)), .obase(base(f_dst)), .kaddr(a_kaddr),
-                     .vaddr(a_kaddr + c_kvhalf), .npos(pos + 10'd1), .nkv(c_nkv), .seq_sh(c_seq_sh),
+    attn_unit u_att (.clk, .rst, .start(a_start), .qbase(base(f_src)), .obase(base(f_dst)), .kaddr(kv_k),
+                     .vaddr(kv_v), .npos(pos + 10'd1 - wbase), .nkv(c_nkv), .seq_sh(c_seq_sh),
                      .t_shift(a_tsh), .v_shift(a_vsh),
                      .done(a_done), .sr_start(a_sr_start), .sr_addr(a_sr_addr), .sr_len(a_sr_len), .s_valid,
                      .s_data, .s_ready(a_s_ready), .vm_raddr(a_vm_ra), .vm_rdata(vm_rd), .vm_we(a_vm_we),
@@ -195,7 +202,8 @@ module engine (
 
     logic        p_go, p_done, l_start;
     sampler u_smp (.clk, .rst, .seed_we, .seed, .emo_we, .emo_addr, .emo_mask, .emo_bias(emo_bias),
-                   .l_start, .l_valid(m_ov && m_tab), .l_data(m_od), .go(p_go), .n(c_vocab), .inv_t, .cut, .gain,
+                   .l_start, .l_valid(m_ov && m_tab), .l_data(m_od), .go(p_go), .forced(t_forced),
+                   .ftok(t_ftok), .n(c_vocab), .inv_t, .cut, .gain,
                    .prev(t_tok), .f_logit(c_flog), .ex_addr(exs_a), .ex_data(exs_d), .gb_addr(gb_a), .gb_data(gb_d),
                    .w_addr(w_a), .w_data(w_d), .best_clr, .cand_end, .cand_keep, .cmp_busy, .score(s_score),
                    .best_k(best_k), .best_s(best_s), .best_n(best_n),
@@ -288,6 +296,8 @@ module engine (
                     end else if (go && ready) begin
                         t_tok    <= tok;
                         t_logits <= logits;
+                        t_forced <= forced;
+                        t_ftok   <= ftok;
                         pc       <= '0;
                         st       <= S_FETCH;
                     end
@@ -387,7 +397,6 @@ module engine (
                         O_ATTN: begin
                             un      <= U_ATT;
                             a_start <= 1'b1;
-                            a_kaddr <= kv_l;
                             a_tsh   <= c_tsh[5:0] - 6'(f_rows[3:0]);
                             a_vsh   <= f_rows[7:4];
                         end
@@ -395,7 +404,7 @@ module engine (
                         default: begin
                             un      <= U_VEC;
                             v_start <= 1'b1;
-                            v_vaddr <= kv_l + c_kvhalf + 20'(pos);
+                            v_vaddr <= kv_v;
                             v_abase <= (f_op == O_SILU) ? base(R_H1) : base(f_src);
                             v_bbase <= (f_op == O_SILU) ? base(R_H3) : (f_op == O_KVW) ? base(R_V) : base(f_dst);
                             v_obase <= (f_op == O_EMBED) ? base(R_X) : base(f_dst);
@@ -404,7 +413,7 @@ module engine (
                             unique case (f_op)
                                 O_EMBED: v_addr <= f_addr + (20'(t_tok) << 5) + 20'(t_tok);
                                 O_ROPE:  v_addr <= c_rope + (20'(pos) << 3);
-                                O_KVW:   v_addr <= kv_l + ((c_nkv == 2'd2) ? 20'(pos) << 3 : 20'(pos) << 2);
+                                O_KVW:   v_addr <= kv_k;
                                 default: v_addr <= f_addr;
                             endcase
                         end

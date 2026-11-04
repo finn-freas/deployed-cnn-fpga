@@ -44,6 +44,8 @@ for the board.
 model writes them. A 4-billion-parameter model (`wesjos/Qwen3.5-4B-Fuck`, 4-bit, run locally)
 writes around 10,000 short text chats where someone talks to the bot or argues with it, and
 the bot roasts back. It's shown funny TikTok comments and a bank of comebacks for the tone.
+A few thousand more are arguments where the bot answers an insult with a "your mom" line,
+written in different wordings so the bot doesn't learn just one.
 No slurs, nothing about groups of people, no suicide jokes.
 
 **3. Filtering.** The same writer model reads every chat again and scores how much sense each
@@ -51,12 +53,22 @@ bot line makes after what was said. The worst ones get dropped. Lines that copy 
 word for word get cut. The emoji at the end of each line get re-picked so they fit what was
 said. "Your mom" comebacks are only kept right after an insult.
 
-**4. Fine-tuning.** The base model is trained on the roast chats, with 5% everyday chat mixed in
-so it doesn't forget how to talk. Training stops when the validation loss stops going down.
-Then the model is quantized and packed into one 8 MB image for the SDRAM.
+**4. Distillation targets.** The writer model reads every chat once more, and at each word of the
+bot's lines it saves its top 20 guesses for the next word, with their probabilities. Its word
+pieces are different from the small model's, so only the positions where both split the text
+at the same place get a target (about 78% of them), and the guesses are mapped onto the small
+model's vocabulary.
+
+**5. Fine-tuning.** The base model is trained on the roast chats, with 5% everyday chat mixed in
+so it doesn't forget how to talk. The loss is the usual next-word loss plus half of the
+cross-entropy against the writer's guesses, so the small model learns which other words would
+also have worked, not just the one that was written. Training keeps going at the lowest
+learning rate until the validation loss hasn't improved for 30 checks in a row (1,500 steps),
+so it stops when it really starts to overfit. Then the model is quantized and packed into one
+8 MB image for the SDRAM.
 
 `scripts/train_roastbot.sh` runs all of it. You need a GPU with 8 GB for the writer model. The
-base model, the roast chats after filtering (7,185 for training and 661 for validation, in
+base model, the roast chats after filtering (7,425 for training and 682 for validation, in
 `data/people/pr/`) and the finished model are all in the repo, so you can also start from any
 step, like fine-tuning the base model on your own chats.
 
@@ -72,9 +84,13 @@ step, like fine-tuning the base model on your own chats.
    thought it was (a log-probability), plus a small bonus for words that are rare in normal
    texting, so "lol ok" doesn't win every time. A reply's score is the average.
 4. **Picking the best.** The board writes up to 6 candidate replies and keeps track of the
-   best average score. The laptop drops candidates that loop or repeat themselves, and
-   "your mom" lines that don't follow an insult or came too soon after the last one.
-5. **Remembering.** The winner goes back into the chat memory, so the bot remembers what it
+   best average score. The laptop drops candidates that loop or repeat themselves, that have
+   a slur, a dig at a group of people or a suicide joke in them, and "your mom" lines that
+   don't follow an insult or came too soon after the last one. If none are left, it asks for up
+   to 12 more.
+5. **Does it answer you?** The 3 best candidates get scored a second time against an empty
+   chat (see below), and the one that depends most on what you said wins.
+6. **Remembering.** The winner goes back into the chat memory, so the bot remembers what it
    actually said.
 
 The board only has to read your new message each time. Everything from earlier in the chat is
@@ -103,6 +119,36 @@ The board keeps the sum and the count for the current candidate, and the sum, co
 of the best one so far. To check if a candidate beats the best, it compares the averages
 without dividing: `sum × best_count > best_sum × count`. Ties go to the earlier candidate.
 
+### Does it answer you?
+
+A small model likes safe replies that would fit after almost anything ("fuck off, you're a
+loser"). To catch those, the board scores each of the 3 best candidates a second time, as if
+it came after an empty chat, and the pick is
+
+```
+mean(score after your chat) − 0.5 × mean(score after an empty chat)
+```
+
+A reply that's just as likely without your message loses points, and one that only makes sense
+after it gains them. This is maximum mutual information decoding. In blind tests the replies
+it picks won 34 to 13 against the plain best score.
+
+It costs very little on the board. The empty chat is three word pieces kept at the end of the
+chat memory (from position 424), and an attention window tells the attention unit to only
+look at positions from there on. Scoring a candidate is a *forced* step: the sampler does its
+two passes over the logits as usual, but takes the given word instead of drawing one, and
+returns its score. The candidate's own score and the best-so-far aren't touched. Afterwards
+the window goes back to 0, so nothing in the real chat is lost.
+
+### "Your mom" lines
+
+Where one is allowed (right after an insult, and not in the last few replies), the first
+candidate is started with "ur mom", "your mom" or "i had your mom" as forced steps, and the
+model finishes it. It only wins if its average score is at least as good as the best normal
+candidate's, so the ones that get through fit what you said. In 30-message chats that are
+half insults that's about 2 or 3 of them, never close together. Any other candidate that
+starts a "your mom" line where none is allowed is stopped right away.
+
 ### Picking the word
 
 Sampling uses the Gumbel-max trick: add Gumbel noise (from a 1,024-entry table, with an
@@ -130,7 +176,7 @@ once per word piece.
 | `attn_unit` | attention over the 8-bit chat memory, 4 query heads per key/value head at once |
 | `sampler` | softmax, the emoji control, picking the word, and the candidate score |
 | `sdram_ctrl`, `stream_rd`, `sdram_cdc` | the SDRAM controller at 108 MHz, the read stream, and the crossing to 54 MHz |
-| `host_link`, `uart` | the USB UART commands: upload the image, run a word piece, read the result |
+| `host_link`, `uart` | the USB UART commands: upload the image, run a word piece (sampled or forced), set the attention window, read the result |
 
 ### The matrix unit
 
@@ -195,14 +241,14 @@ the LUTs, so about half the placement seeds don't place, and each new build trie
 | Board build (`roastbot_top`) | |
 |-|-|
 | FPGA usage | LUT4 75%, DFF 63%, BSRAM 43/46, 34/48 multipliers |
-| Max clock after routing | 68.9 MHz for the engine (runs at 54 MHz), 126.5 MHz for the SDRAM side (runs at 108 MHz) |
+| Max clock after routing | 69.0 MHz for the engine (runs at 54 MHz), 131.3 MHz for the SDRAM side (runs at 108 MHz) |
 | SDRAM image | 8,038 KiB of 8,188 (weights 6,144, word table 792, chat memory 1,024) |
-| Speed | reading 24 ms and writing 30 ms per word piece, about 4.8 s per reply |
+| Speed | reading 24 ms and writing 30 ms per word piece, about 6 s per reply (4.8 s before the second scoring) |
 
 | Test | |
 |-|-|
 | cocotb (Verilator) | `link`, `mv` and `engine` all bit-exact with `board.py` |
-| On the board | 14 of 14 replies identical to the CPU (`scripts/board_check.py --best`) |
+| On the board | 14 of 14 replies identical to the CPU (`scripts/board_check.py --best`), and 14 of 14 insults (`--argue`) |
 
 ### Why not bigger
 

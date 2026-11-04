@@ -3,7 +3,7 @@
 module roastbot_top #(
     parameter int BAUD = 1_000_000,
     parameter int MHZ  = 54,
-    parameter int SD_MHZ = 108
+    parameter int SD_MHZ = 2 * MHZ
 ) (
     input  wire logic        clk_27,
     input  wire logic        btn_s1,
@@ -24,7 +24,11 @@ module roastbot_top #(
     localparam int CLK_HZ = MHZ * 1_000_000;
 
     logic clk, clk_f, clk_p, lock, rst, rst_f;
-    gw_pll_2x u_pll (.clk_27, .clk_f, .clk_p, .clk_s(clk), .locked(lock));
+    if (MHZ == 63) begin : g_pll
+        gw_pll_2x_63 u_pll (.clk_27, .clk_f, .clk_p, .clk_s(clk), .locked(lock));
+    end else begin : g_pll
+        gw_pll_2x u_pll (.clk_27, .clk_f, .clk_p, .clk_s(clk), .locked(lock));
+    end
     reset_sync u_rst (.clk, .rst_async_in(!lock || btn_s1), .rst_out(rst));
     reset_sync u_rst_f (.clk(clk_f), .rst_async_in(!lock || btn_s1), .rst_out(rst_f));
 
@@ -69,14 +73,15 @@ module roastbot_top #(
     assign wr_data = e_busy ? n_wr_data : h_wr_data;
 
     logic        busy;
-    logic        e_init, e_go, e_logits, e_pos_we, e_ready, e_seed_we, e_emo_we, e_emo_mask;
+    logic        e_init, e_go, e_logits, e_forced, e_pos_we, e_ready, e_seed_we, e_emo_we, e_emo_mask;
     logic [9:0]  e_pos_d;
     logic        e_best_clr, e_cand_end, e_cand_keep, e_cmp_busy;
     logic [23:0] e_s_score;
     logic [7:0]  e_best_k, e_best_n;
     logic [31:0] e_best_s;
     logic [11:0] e_tok, e_inv_t, e_s_tok;
-    logic [9:0]  e_pos;
+    logic [9:0]  e_pos, e_wbase;
+    logic [11:0] e_ftok;
     logic [31:0] e_seed;
     logic [15:0] e_cut, e_gain, e_emo_bias;
     logic [6:0]  e_emo_addr;
@@ -86,7 +91,7 @@ module roastbot_top #(
         .rd_req(h_rd_req), .rd_addr(h_rd_addr), .rd_len(h_rd_len), .rd_ack(rd_ack && !e_busy),
         .rvalid(rvalid && !e_busy), .rdata, .wr_req(h_wr_req), .wr_addr(h_wr_addr), .wr_data(h_wr_data),
         .wr_ack(wr_ack && !e_busy),
-        .e_init, .e_go, .e_tok, .e_logits, .e_pos_we, .e_pos_d, .e_best_clr, .e_cand_end, .e_cand_keep,
+        .e_init, .e_go, .e_tok, .e_logits, .e_forced, .e_ftok, .e_wbase, .e_pos_we, .e_pos_d, .e_best_clr, .e_cand_end, .e_cand_keep,
         .e_cmp_busy, .e_s_score, .e_best_k, .e_best_s, .e_best_n, .e_busy, .e_pos, .e_seed_we, .e_seed, .e_inv_t,
         .e_cut, .e_gain, .e_emo_we, .e_emo_addr, .e_emo_mask, .e_emo_bias, .e_s_tok, .e_s_em, .e_s_total);
 
@@ -94,7 +99,8 @@ module roastbot_top #(
     logic [63:0] e_op;
     logic [255:0] e_vm;
     logic [15:0] e_l;
-    engine u_eng (.clk, .rst, .init(e_init), .go(e_go), .tok(e_tok), .logits(e_logits), .pos_we(e_pos_we), .pos_d(e_pos_d),
+    engine u_eng (.clk, .rst, .init(e_init), .go(e_go), .tok(e_tok), .logits(e_logits), .forced(e_forced),
+                  .ftok(e_ftok), .wbase(e_wbase), .pos_we(e_pos_we), .pos_d(e_pos_d),
                   .busy(e_busy), .ready(e_ready), .pos(e_pos), .seed_we(e_seed_we), .seed(e_seed), .inv_t(e_inv_t),
                   .cut(e_cut), .gain(e_gain), .emo_we(e_emo_we), .emo_addr(e_emo_addr), .emo_mask(e_emo_mask),
                   .emo_bias(e_emo_bias), .s_tok(e_s_tok), .s_em(e_s_em), .s_total(e_s_total),

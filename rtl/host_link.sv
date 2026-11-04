@@ -29,6 +29,9 @@ module host_link #(
     output      logic        e_go,
     output      logic [11:0] e_tok,
     output      logic        e_logits,
+    output      logic        e_forced,
+    output      logic [11:0] e_ftok,
+    output      logic [9:0]  e_wbase,
     output      logic        e_pos_we,
     output      logic [9:0]  e_pos_d,
     output      logic        e_best_clr,
@@ -54,7 +57,7 @@ module host_link #(
     input  wire logic [47:0] e_s_em,
     input  wire logic [47:0] e_s_total
 );
-    localparam logic [7:0] VERSION = 8'd2;
+    localparam logic [7:0] VERSION = 8'd3;
     localparam int DIV   = (CLK_HZ + BAUD / 2) / BAUD;
     localparam int CHUNK = 16384;
 
@@ -137,9 +140,9 @@ module host_link #(
                             out_sh <= 64'("z");
                             out_n  <= 4'd1;
                         end
-                        "S", "G", "F", "J", "Y": begin
-                            e_need <= (rx_d == "S") ? 3'd4 : (rx_d == "G") ? 3'd6 : (rx_d == "F") ? 3'd3 :
-                                      (rx_d == "J") ? 3'd2 : 3'd1;
+                        "S", "G", "F", "J", "Y", "X": begin
+                            e_need <= (rx_d == "S") ? 3'd4 : (rx_d == "G") ? 3'd6 : (rx_d == "F") ? 3'd5 :
+                                      (rx_d == "Y") ? 3'd1 : 3'd2;
                             st     <= S_EARG;
                         end
                         "E": begin
@@ -244,6 +247,12 @@ module host_link #(
                                 out_n    <= 4'd1;
                                 st       <= S_CMD;
                             end
+                            "X": begin
+                                e_wbase <= {rx_d[1:0], args[47:40]};
+                                out_sh  <= 64'("x");
+                                out_n   <= 4'd1;
+                                st      <= S_CMD;
+                            end
                             "Y": begin
                                 e_best_clr  <= rx_d[0];
                                 e_cand_end  <= rx_d[1] && !rx_d[0];
@@ -252,8 +261,10 @@ module host_link #(
                                 st          <= S_YWAIT;
                             end
                             default: begin
-                                e_logits <= args[32];
-                                e_tok    <= {rx_d[3:0], args[47:40]};
+                                e_logits <= args[16] | args[17];
+                                e_forced  <= args[17];
+                                e_tok    <= {args[35:32], args[31:24]};
+                                e_ftok   <= {rx_d[3:0], args[47:40]};
                                 e_go     <= 1'b1;
                                 e_seen   <= 1'b0;
                                 st       <= S_EWAIT;

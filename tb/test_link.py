@@ -48,7 +48,7 @@ async def test_link(dut):
     while not dut.sd_ready.value:
         await RisingEdge(dut.clk)
     await send(dut, b"P")
-    assert await recv(dut, 3) == b"K\x02\x01"
+    assert await recv(dut, 3) == b"K\x03\x01"
     await send(dut, b"D")
     d = await recv(dut, 3)
     diag = int.from_bytes(d[1:3], "little")
@@ -68,4 +68,7 @@ async def test_link(dut):
         assert struct.unpack("<I", await recv(dut, 4))[0] == want
     await send(dut, b"x")
     assert await recv(dut, 1) == b"?"
+    await send(dut, b"X" + struct.pack("<H", 424))
+    assert await recv(dut, 1) == b"x"
+    assert int(dut.u_link.e_wbase.value) == 424
     dut._log.info("link: ping, write/read/checksum at 5 addresses all pass")

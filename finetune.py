@@ -34,9 +34,40 @@ def encode_sessions(tok, path):
     return out
 
 
+def load_kd(tok, path, sess):
+    import pickle
+    d = pickle.loads(Path(path).read_bytes())
+    fold = {}
+    for i in range(4, T.VOCAB):
+        s = tok.decode([i])
+        if s == "\n":
+            fold[i] = T.YOU
+        elif s != s.lower():
+            if s.startswith(" "):
+                e = tok.encode(s.lower().lstrip(" "), add_special_tokens=False).ids
+            else:
+                e = [tok.token_to_id(s.lower())]
+            if len(e) == 1 and e[0] is not None:
+                fold[i] = e[0]
+    out = []
+    for (ids, _), (pos, idx, prob) in zip(sess, d["rows"]):
+        ki = np.full((len(ids), d["K"]), -1, np.int16)
+        kp = np.zeros((len(ids), d["K"]), np.float32)
+        for p_, i_, q_ in zip(pos, idx, prob):
+            acc = {}
+            for a, b in zip(i_.tolist(), q_.tolist()):
+                if a >= 0:
+                    a = fold.get(a, a)
+                    acc[a] = acc.get(a, 0.0) + b
+            for k, (a, b) in enumerate(sorted(acc.items(), key=lambda x: -x[1])):
+                ki[p_, k], kp[p_, k] = a, b
+        out.append((ki, kp))
+    return out
+
+
 class People:
-    def __init__(self, sess, seq, seed):
-        self.s, self.seq = sess, seq
+    def __init__(self, sess, seq, seed, kd=None):
+        self.s, self.seq, self.kd = sess, seq, kd
         self.rng = np.random.default_rng(seed)
         w = np.array([len(i) for i, _ in sess], float)
         self.p = w / w.sum()
@@ -44,13 +75,23 @@ class People:
     def batch(self, n):
         x = np.full((n, self.seq), T.PAD, np.int64)
         y = np.full((n, self.seq), -1, np.int64)
+        K = self.kd[0][0].shape[1] if self.kd else 1
+        ki = np.full((n, self.seq, K), -1, np.int64)
+        kp = np.zeros((n, self.seq, K), np.float32)
         for r in range(n):
-            ids, lab = self.s[self.rng.choice(len(self.s), p=self.p)]
+            j = self.rng.choice(len(self.s), p=self.p)
+            ids, lab = self.s[j]
             st = int(self.rng.integers(0, max(1, len(ids) - self.seq)))
             seg, sl = ids[st:st + self.seq + 1], lab[st:st + self.seq + 1]
             L = len(seg) - 1
             x[r, :L] = seg[:-1]
             y[r, :L] = np.where(sl[1:], seg[1:], -1)
+            if self.kd:
+                ki[r, :L] = self.kd[j][0][st + 1:st + 1 + L]
+                kp[r, :L] = self.kd[j][1][st + 1:st + 1 + L]
+        if self.kd:
+            return (torch.from_numpy(x).cuda(), torch.from_numpy(y).cuda(), torch.from_numpy(ki).cuda(),
+                    torch.from_numpy(kp).cuda())
         return torch.from_numpy(x).cuda(), torch.from_numpy(y).cuda()
 
 
@@ -110,6 +151,9 @@ def main():
     ap.add_argument("--dropout", type=float, default=0.1)
     ap.add_argument("--eval-every", type=int, default=100)
     ap.add_argument("--patience", type=int, default=8)
+    ap.add_argument("--until-overfit", action="store_true",
+                    help="past --steps keep going at the lowest learning rate until --patience stops it")
+    ap.add_argument("--start-step", type=int, default=0, help="continue a run: --init its pr.pt, same --steps")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default=str(ROOT / "models"))
     ap.add_argument("--synth", default="", help="their synthetic sessions (data/synth/<person>.jsonl) mixed in")
@@ -117,6 +161,8 @@ def main():
     ap.add_argument("--boost", default="", help="regex: their real messages that match are drilled more")
     ap.add_argument("--boost-frac", type=float, default=0.2, help="share of each batch from --boost snippets")
     ap.add_argument("--gen", default=str(T.TOK / "train.bin"), help="general chat stream for --mix")
+    ap.add_argument("--kd", type=float, default=0.0,
+                    help="weight of the writer's next-token guesses (data/people/<person>/kd_train.pkl)")
     a = ap.parse_args()
     torch.manual_seed(a.seed)
     out = Path(a.out)
@@ -128,7 +174,7 @@ def main():
     net.set_qat(True)
     tok = T.load_chat()
     slots = T.TOK / "slots.json"
-    if T.CHAT_TOK.exists() and slots.exists():
+    if T.CHAT_TOK.exists() and slots.exists() and not a.start_step:
         with torch.no_grad():
             for tid, _, old in json.loads(slots.read_text()):
                 net.emb.weight[tid] = net.emb.weight[old].mean(0)
@@ -136,7 +182,11 @@ def main():
     tr, va = encode_sessions(tok, d / "train.jsonl"), encode_sessions(tok, d / "val.jsonl")
     print(f"{a.person}: train {sum(len(i) for i, _ in tr)} tokens ({sum(l.sum() for _, l in tr)} labelled), "
           f"val {sum(len(i) for i, _ in va)}", flush=True)
-    data = People(tr, c["seq"], a.seed)
+    kd = load_kd(tok, d / "kd_train.pkl", tr) if a.kd else None
+    if kd:
+        print(f"kd: {sum(int((k[:, 0] >= 0).sum()) for k, _ in kd)} positions with a writer target, weight {a.kd}",
+              flush=True)
+    data = People(tr, c["seq"], a.seed, kd)
     gen = Stream(a.gen, c["seq"], a.seed)
     n_gen = int(round(a.batch * a.mix))
     syn = None
@@ -163,8 +213,8 @@ def main():
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=0.1, betas=(0.9, 0.95))
     best, best_state, bad, log = float("inf"), None, 0, []
     t0 = time.time()
-    for step in range(a.steps + 1):
-        lr = a.lr * min(1.0, (step + 1) / 100) * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * step / a.steps)))
+    for step in range(a.start_step, a.steps * (4 if a.until_overfit else 1) + 1):
+        lr = a.lr * min(1.0, (step - a.start_step + 1) / 100) * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * min(step, a.steps) / a.steps)))
         for g in opt.param_groups:
             g["lr"] = lr
         if step % a.eval_every == 0:
@@ -179,7 +229,7 @@ def main():
             print(f"step {step} val {vl:.4f} ppl {math.exp(vl):.2f} ({nv} tok) {time.time() - t0:.0f}s{mark}", flush=True)
             if bad >= a.patience:
                 break
-        x, y = data.batch(a.batch - n_gen - n_syn - n_bst)
+        x, y, *kdb = data.batch(a.batch - n_gen - n_syn - n_bst)
         if n_bst:
             bx, by = bst.batch(n_bst)
             x, y = torch.cat([x, bx]), torch.cat([y, by])
@@ -190,7 +240,15 @@ def main():
             gx, gy = gen.batch(n_gen)
             x, y = torch.cat([x, gx]), torch.cat([y, gy])
         with torch.autocast("cuda", torch.bfloat16):
-            loss = F.cross_entropy(net(x).float().flatten(0, 1), y.flatten(), ignore_index=-1)
+            lg = net(x).float()
+        loss = F.cross_entropy(lg.flatten(0, 1), y.flatten(), ignore_index=-1)
+        if kdb:
+            ki, kp = kdb
+            lp = lg[:ki.shape[0]].log_softmax(-1)
+            has = ki[..., 0] >= 0
+            if has.any():
+                ce = -(kp * lp.gather(-1, ki.clamp(min=0))).sum(-1)
+                loss = loss + a.kd * ce[has].mean()
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)

@@ -68,6 +68,13 @@ MOMS = ["fuck you too, i had your mom last night", "i had your mom screaming tha
 MOM2 = (" Exactly one of B's texts answers one of F's insults (like 'fuck you' or 'shut up') with a cocky 'i had your "
         "mom' line that fits what F said, in the spirit of {moms} but made up fresh (don't copy these). Not a 'yo mama "
         "so fat' joke, and nothing about her dying, being sick or being poor. B's other texts don't mention F's mom.")
+MOM3 = (" Exactly one of B's texts answers one of F's insults (like 'fuck you' or 'shut up') with a cocky line about "
+        "F's mom (that B is with her, she likes B more, she was busy with B, B is his new dad...) that fits what F "
+        "said, in the spirit of {moms} but made up fresh in your own words (don't copy these, and don't start it "
+        "with 'i had your mom'). Not a 'yo mama so fat' joke, and nothing about her dying, being sick or being poor. "
+        "B's other texts don't mention F's mom.")
+MOMS3 = [x for x in MOMS if not x.startswith(("i had", "fuck you too"))]
+I_HAD = re.compile(r"\bi had (your|ur) mom")
 norm = lambda s: " ".join(re.sub(r"[^a-z ]", " ", s.lower().replace("’", "")).split())
 MOM_RE = re.compile(r"\b(your|ur|yo|you're) (mom|mama|momma|moms)\b")
 YO_MAMA = re.compile(r"\b(yo|your|ur) (mom|mama|momma)('?s)? (is )?so\b")
@@ -117,6 +124,8 @@ def parse(text, mom=False, strict=False):
         return None
     if strict and not mom_fits(turns):
         return None
+    if strict == 3 and any(I_HAD.search(t.lower().replace("’", "'")) for s, t in turns if s == 1):
+        return None
     return turns
 
 
@@ -124,7 +133,7 @@ def main():
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 1500
     flags = sys.argv[2:]
     modes = (["topic", "argue"] if "both" in flags else ["argue"] if "argue" in flags else ["mom2"] if "mom2" in flags
-             else ["mom"] if "mom" in flags
+             else ["mom3"] if "mom3" in flags else ["mom"] if "mom" in flags
              else ["topic"])
     B = next((int(a[6:]) for a in flags if a.startswith("batch=")), 24)
     bank = json.loads((ROOT / "data" / "style" / "roast_bank.json").read_text())
@@ -132,7 +141,7 @@ def main():
     tok, net = q4(WRITER)
     run = {}
     for m in modes:
-        d = ROOT / "data" / "people" / {"argue": "rb_arg", "mom": "rb_mom", "mom2": "rb_mom2"}.get(m, "rb")
+        d = ROOT / "data" / "people" / {"argue": "rb_arg", "mom": "rb_mom", "mom2": "rb_mom2", "mom3": "rb_mom3"}.get(m, "rb")
         d.mkdir(exist_ok=True)
         part_f = d / "partial.jsonl"
         out = [json.loads(line)["turns"] for line in open(part_f)] if part_f.exists() else []
@@ -146,12 +155,13 @@ def main():
             break
         m = min(todo, key=lambda k: len(run[k]["out"]))
         st = run[m]
-        argue = m in ("argue", "mom2") or (m == "mom" and st["tries"] // B % 2 == 0)
+        argue = m in ("argue", "mom2", "mom3") or (m == "mom" and st["tries"] // B % 2 == 0)
         prompt, topics = (ARGUE, OPENERS) if argue else (SYSTEM, TOPICS)
-        prompt += {"mom": MOM, "mom2": MOM2}.get(m, "")
+        prompt += {"mom": MOM, "mom2": MOM2, "mom3": MOM3}.get(m, "")
+        pool = MOMS3 if m == "mom3" else MOMS
         ps = [chat(tok, prompt.format(emoji=" ".join(EMOJI), roasts=", ".join(f'"{x}"' for x in r.sample(bank, 3)),
                                       curses=", ".join(r.sample(CURSES, 5)), topic=r.choice(topics),
-                                      moms=", ".join(f'"{x}"' for x in r.sample(MOMS, 2)),
+                                      moms=", ".join(f'"{x}"' for x in r.sample(pool, 2)),
                                       style=" / ".join(f'"{x}"' for x in r.sample(tiktok, 5))), "Write it.")
               for _ in range(B)]
         x = tok(ps, return_tensors="pt", padding=True).to("cuda:0")
@@ -160,7 +170,7 @@ def main():
                              pad_token_id=tok.pad_token_id or tok.eos_token_id)
         with open(st["part"], "a") as f:
             for o in tok.batch_decode(y[:, x["input_ids"].shape[1]:], skip_special_tokens=True):
-                t = parse(o, m.startswith("mom"), m == "mom2")
+                t = parse(o, m.startswith("mom"), {"mom2": True, "mom3": 3}.get(m, False))
                 if t:
                     st["out"].append(t)
                     f.write(json.dumps({"turns": t}, ensure_ascii=False) + chr(10))

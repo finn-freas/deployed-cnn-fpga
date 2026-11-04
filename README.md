@@ -15,7 +15,7 @@ roast bot> so you lost to a tiny little piece of plastic and still can't get a j
 It's a 16-layer, 12-million-parameter language model, and the FPGA does all of it.
 The laptop just sends your message over USB and prints the answer (but you don't need a laptop!)
 
-- a reply takes about **4.8 seconds**
+- a reply takes about **6 seconds**
 - the model fills the board's whole 8 MB of memory
 - the board's replies match a Python model of the hardware bit for bit
 - built with the open-source tools (Yosys, nextpnr, Verilator, cocotb), no vendor IDE
@@ -45,11 +45,11 @@ timing on the board with `scripts/sdram_diag.py` before you trust it.
 
 | | |
 |-|-|
-| `bitstream/roastbot.fs` | the bitstream (14 of 14 replies identical to the CPU, SDRAM clock phase 4) |
+| `bitstream/roastbot.fs` | the bitstream (14 of 14 replies identical to the CPU, plus 14 of 14 insults, SDRAM clock phase 4) |
 | `models/pr_board.pkl.xz` | the quantized model the board runs (unpacked the first time you chat) |
 | `models/pr.pt` | the same model before quantizing, in PyTorch |
 | `models/pre_b16.pt` | the base model, before it learned to roast |
-| `data/people/pr/` | the ~7,800 roast chats it was fine-tuned on |
+| `data/people/pr/` | the ~8,100 roast chats it was fine-tuned on |
 | `data/tok/` | the tokenizer |
 | `data/style/` | the TikTok comments and comebacks shown to the writer model |
 | `rtl/` | the hardware |
