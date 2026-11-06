@@ -68,6 +68,18 @@ def pick_seed(arg):
     return seed
 
 
+def startup_seed(argv):
+    if "--seed" not in argv:
+        return 1
+    i = argv.index("--seed")
+    if i + 1 >= len(argv):
+        sys.exit("--seed needs a number or 'random'")
+    try:
+        return pick_seed(argv[i + 1])
+    except ValueError:
+        sys.exit(f"--seed: not a valid value: {argv[i + 1]}")
+
+
 def emoji_scale(emoji):
     return (2 * max(0.0, emoji)) ** 2
 
@@ -539,9 +551,8 @@ def main():
     else:
         people = {k: Person(k) for k in keys}
     cur = next(iter(people.values()))
-    temp, cut, seed, emoji, best = None, 4.0, 1, None, None
-    if "--seed" in sys.argv:
-        seed = pick_seed(sys.argv[sys.argv.index("--seed") + 1])
+    temp, cut, emoji, best = None, 4.0, None, None
+    seed = startup_seed(sys.argv)
     rng = make_rng(seed)
     if link:
         link.seed(rng.x)

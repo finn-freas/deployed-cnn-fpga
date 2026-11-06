@@ -145,3 +145,19 @@ def test_bad_command_values_do_not_end_the_session(monkeypatch, tmp_path, capsys
     out = capsys.readouterr().out
     assert "not a valid value" in out
     assert command.split()[0] in out
+
+
+def test_startup_seed_default(capsys):
+    assert C.startup_seed(["chat.py"]) == 1
+    assert capsys.readouterr().out == ""
+
+
+def test_startup_seed_value(capsys):
+    assert C.startup_seed(["chat.py", "--seed", "7"]) == 7
+
+
+@pytest.mark.parametrize("argv", [["chat.py", "--seed"], ["chat.py", "--seed", "abc"]])
+def test_startup_seed_rejects_bad_value(argv):
+    with pytest.raises(SystemExit) as e:
+        C.startup_seed(argv)
+    assert "--seed" in str(e.value)
