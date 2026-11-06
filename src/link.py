@@ -13,7 +13,11 @@ CHUNK = 4096
 
 class Link:
     def __init__(self, port=PORT, baud=BAUD):
-        self.fd = os.open(port, os.O_RDWR | os.O_NOCTTY)
+        try:
+            self.fd = os.open(port, os.O_RDWR | os.O_NOCTTY)
+        except OSError as e:
+            raise ConnectionError(f"cannot open the serial port {port}: {e.strerror}; "
+                                  "check that the board is plugged in and no other program is using the port") from e
         a = termios.tcgetattr(self.fd)
         a[0] = a[1] = a[3] = 0
         a[2] = termios.CS8 | termios.CREAD | termios.CLOCAL

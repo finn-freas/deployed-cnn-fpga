@@ -162,3 +162,8 @@ def test_main_load_missing_image_names_the_file(monkeypatch, tmp_path):
         link.main()
     assert "m_board.sdram.bin" in str(e.value)
     assert not opened
+
+
+def test_missing_port_gives_clear_error(tmp_path):
+    with pytest.raises(ConnectionError, match="cannot open the serial port"):
+        link.Link(port=str(tmp_path / "ttyMissing"))
