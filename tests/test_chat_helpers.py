@@ -117,3 +117,31 @@ def test_mom_bad_normalises_curly_apostrophe():
 
     assert not C.mom_bad(P, tk, [0], "shut up")
     assert C.mom_bad(P, tk, [0], "nothing")
+
+
+class FakePerson:
+    name = "pr"
+    key = "pr"
+
+    def __init__(self, *args):
+        pass
+
+
+def run_main(monkeypatch, tmp_path, lines):
+    model = tmp_path / "pr_board.pkl"
+    model.write_bytes(b"")
+    monkeypatch.setattr(C, "board_file", lambda mdir, key: model)
+    monkeypatch.setattr(T, "load_chat", lambda: None)
+    monkeypatch.setattr(C, "Person", FakePerson)
+    monkeypatch.setattr(sys, "argv", ["chat.py"])
+    feed = iter(lines)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(feed))
+    C.main()
+
+
+@pytest.mark.parametrize("command", ["/temp abc", "/temp 0", "/temp -1", "/cut x", "/emoji y", "/seed z", "/best 1.5"])
+def test_bad_command_values_do_not_end_the_session(monkeypatch, tmp_path, capsys, command):
+    run_main(monkeypatch, tmp_path, [command, "/quit"])
+    out = capsys.readouterr().out
+    assert "not a valid value" in out
+    assert command.split()[0] in out

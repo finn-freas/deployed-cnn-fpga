@@ -561,38 +561,44 @@ def main():
         if line.startswith("/"):
             cmd, *arg = line[1:].split(maxsplit=1) or ["help"]
             arg = arg[0] if arg else ""
-            if cmd in ("q", "quit", "exit"):
-                break
-            elif cmd == "reset":
-                cur.reset()
-                print("conversation cleared")
-            elif cmd == "temp" and arg:
-                temp = None if arg == "auto" else float(arg)
-                print("each person's own temperature" if temp is None else
-                      f"temperature {temp} (board inv_t {round(256 / temp)})")
-            elif cmd == "cut" and arg:
-                cut = float(arg)
-                print(f"cutoff: only words within {cut} of the best (lower = safer, higher = wilder)")
-            elif cmd == "emoji" and arg:
-                emoji = float(arg)
-                print(f"emoji {emoji} (0.5 = their usual amount, 1 = more, 0 = none)")
-            elif cmd == "seed" and arg:
-                seed = pick_seed(arg)
-                rng = make_rng(seed)
-                if link:
-                    link.seed(rng.x)
-            elif cmd == "best" and arg:
-                best = None if arg == "auto" else max(1, min(BEST_N, int(arg)))
-                print("each person's own number of candidates" if best is None else
-                      f"writing up to {best} replies per message and showing the one most like them" if best > 1
-                      else "one reply per message")
-            elif cmd == "info":
-                c = cur.p["cfg"]
-                mm = B.memory_map(cur.p)
-                print(f"{cur.name} {where}: {c.n_layers} layers x {c.dim}, 4-bit weights, {cur.pos}/{c.seq_len} "
-                      f"tokens used, temp {TEMP.get(cur.key, 0.8) if temp is None else temp}, cut {cut}, emoji {EMOJI_LEVEL.get(cur.key, 0.5) if emoji is None else emoji}, best of {best or cur.n_best}, SDRAM {mm['total'] / 2 ** 20:.2f} MB")
-            else:
-                print(HELP)
+            try:
+                if cmd in ("q", "quit", "exit"):
+                    break
+                elif cmd == "reset":
+                    cur.reset()
+                    print("conversation cleared")
+                elif cmd == "temp" and arg:
+                    value = None if arg == "auto" else float(arg)
+                    if value is not None and not value > 0:
+                        raise ValueError(arg)
+                    temp = value
+                    print("each person's own temperature" if temp is None else
+                          f"temperature {temp} (board inv_t {round(256 / temp)})")
+                elif cmd == "cut" and arg:
+                    cut = float(arg)
+                    print(f"cutoff: only words within {cut} of the best (lower = safer, higher = wilder)")
+                elif cmd == "emoji" and arg:
+                    emoji = float(arg)
+                    print(f"emoji {emoji} (0.5 = their usual amount, 1 = more, 0 = none)")
+                elif cmd == "seed" and arg:
+                    seed = pick_seed(arg)
+                    rng = make_rng(seed)
+                    if link:
+                        link.seed(rng.x)
+                elif cmd == "best" and arg:
+                    best = None if arg == "auto" else max(1, min(BEST_N, int(arg)))
+                    print("each person's own number of candidates" if best is None else
+                          f"writing up to {best} replies per message and showing the one most like them" if best > 1
+                          else "one reply per message")
+                elif cmd == "info":
+                    c = cur.p["cfg"]
+                    mm = B.memory_map(cur.p)
+                    print(f"{cur.name} {where}: {c.n_layers} layers x {c.dim}, 4-bit weights, {cur.pos}/{c.seq_len} "
+                          f"tokens used, temp {TEMP.get(cur.key, 0.8) if temp is None else temp}, cut {cut}, emoji {EMOJI_LEVEL.get(cur.key, 0.5) if emoji is None else emoji}, best of {best or cur.n_best}, SDRAM {mm['total'] / 2 ** 20:.2f} MB")
+                else:
+                    print(HELP)
+            except ValueError:
+                print(f"/{cmd}: not a valid value: {arg}")
             continue
         t0 = time.time()
         nb = best or cur.n_best
