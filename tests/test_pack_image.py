@@ -113,3 +113,16 @@ def test_memory_report_mentions_free_space(tiny):
     report = P.memory_report(img)
     assert "layers" in report and "KiB free" in report
     assert f"of {P.CAL_ROW}" in report
+
+
+def test_main_writes_the_sdram_image_next_to_the_pickle(tiny, tmp_path, monkeypatch, capsys):
+    import pickle
+    src = tmp_path / "tiny.pkl"
+    src.write_bytes(pickle.dumps(tiny))
+    monkeypatch.setattr(sys, "argv", ["pack.py", str(src)])
+    P.main()
+    out = tmp_path / "tiny.sdram.bin"
+    img, prog = P.build(tiny)
+    assert out.read_bytes() == img.bytes()
+    text = capsys.readouterr().out
+    assert text.startswith("tiny:") and f"{len(prog)} microcode ops" in text
