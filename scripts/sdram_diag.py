@@ -7,8 +7,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from link import Link, checksum
 
 
+USAGE = "usage: python scripts/sdram_diag.py [rounds [words]]  (rounds >= 0, words >= 4096)"
+
+
+def parse_args(argv):
+    try:
+        rounds = int(argv[0]) if len(argv) > 0 else 20
+        n = int(argv[1]) if len(argv) > 1 else 65536
+    except ValueError:
+        sys.exit(USAGE)
+    if len(argv) > 2 or rounds < 0 or n < 4096:
+        sys.exit(USAGE)
+    return rounds, n
+
+
 def main():
-    rounds = int(sys.argv[1]) if len(sys.argv) > 1 else 20
+    rounds, n = parse_args(sys.argv[1:])
     lk = Link()
     print("ping", lk.ping())
     lk.send(b"D")
@@ -20,7 +34,7 @@ def main():
     if not rounds:
         return
     rnd = random.Random(1)
-    a, n = 0xE0000, int(sys.argv[2]) if len(sys.argv) > 2 else 65536
+    a = 0xE0000
     words = [rnd.getrandbits(64) for _ in range(n)]
     data = struct.pack(f"<{n}Q", *words)
     lk.write_bytes(a, data)
