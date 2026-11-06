@@ -131,3 +131,34 @@ def test_emoji_table_size():
     lk = FakeLink([b"e"])
     lk.emoji_table([1] * 128, [-1] * 128)
     assert len(lk.sent) == 1 + 128 * 3
+
+
+def run_main(monkeypatch, *argv):
+    opened = []
+    monkeypatch.setattr(link, "Link", lambda: opened.append(1))
+    monkeypatch.setattr(sys, "argv", ["link.py", *argv])
+    return opened
+
+
+def test_main_unknown_command_exits_before_opening_the_port(monkeypatch):
+    opened = run_main(monkeypatch, "bogus")
+    with pytest.raises(SystemExit) as e:
+        link.main()
+    assert "usage" in str(e.value)
+    assert not opened
+
+
+def test_main_load_without_a_path_exits_with_usage(monkeypatch):
+    opened = run_main(monkeypatch, "load")
+    with pytest.raises(SystemExit) as e:
+        link.main()
+    assert "usage" in str(e.value)
+    assert not opened
+
+
+def test_main_load_missing_image_names_the_file(monkeypatch, tmp_path):
+    opened = run_main(monkeypatch, "load", str(tmp_path / "m_board"))
+    with pytest.raises(SystemExit) as e:
+        link.main()
+    assert "m_board.sdram.bin" in str(e.value)
+    assert not opened

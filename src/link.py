@@ -148,13 +148,27 @@ def checksum(data):
     return sum(struct.unpack(f"<{len(data) // 4}I", data)) & 0xFFFFFFFF
 
 
+USAGE = "usage: python src/link.py ping | load models/pr_board"
+
+
+def read_image(argv):
+    if len(argv) < 3:
+        sys.exit(USAGE)
+    path = Path(argv[2]).with_suffix(".sdram.bin")
+    if not path.is_file():
+        sys.exit(f"{path} not found; build it with pack.py first")
+    return path.read_bytes()
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "ping"
+    if cmd not in ("ping", "load"):
+        sys.exit(USAGE)
+    img = read_image(sys.argv) if cmd == "load" else None
     link = Link()
     if cmd == "ping":
         print(link.ping())
     elif cmd == "load":
-        img = Path(sys.argv[2]).with_suffix(".sdram.bin").read_bytes()
         t = time.time()
 
         def progress(done, n):
@@ -165,8 +179,6 @@ def main():
         want, got = checksum(img), link.checksum(0, -(-len(img) // 8))
         print(f"\nuploaded {len(img) / 2 ** 20:.2f} MB in {dt:.1f}s ({len(img) / dt / 1e3:.0f} KB/s), "
               f"checksum {'OK' if want == got else f'MISMATCH {got:#x} != {want:#x}'}")
-    else:
-        sys.exit("usage: python src/link.py ping | load models/pr_board")
 
 
 if __name__ == "__main__":
