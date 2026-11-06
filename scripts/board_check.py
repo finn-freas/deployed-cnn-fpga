@@ -13,10 +13,24 @@ PROMPTS = ["how are you", "what are you doing", "did you eat yet", "lol ok", "yo
 ARGUE = ["yo", "fuck you", "ur so dumb", "what are you doing", "shut up", "i hate you", "ur a toaster"]
 
 
-def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    best = "--best" in sys.argv
+USAGE = "usage: python scripts/board_check.py [model key] [--best] [--argue]"
+FLAGS = ("--best", "--argue")
+
+
+def parse_args(argv):
+    flags = [a for a in argv if a.startswith("--")]
+    args = [a for a in argv if not a.startswith("--")]
+    bad = [a for a in flags if a not in FLAGS]
+    if bad or len(args) > 1:
+        sys.exit(f"{USAGE}" + (f"\nunknown option: {bad[0]}" if bad else ""))
     key = args[0] if args else "pr"
+    if not chat.board_file(chat.MODELS, key).exists():
+        sys.exit(f"no model {key!r}: {chat.MODELS / (key + '_board.pkl')} not found")
+    return key, "--best" in flags, "--argue" in flags
+
+
+def main():
+    key, best, argue = parse_args(sys.argv[1:])
     tok = T.load_chat()
     link = Link()
     print("ping", link.ping())
@@ -28,7 +42,7 @@ def main():
         brd.reset()
         rng = chat.make_rng(seed)
         link.seed(chat.make_rng(seed).x)
-        for q in ARGUE if "--argue" in sys.argv else PROMPTS:
+        for q in ARGUE if argue else PROMPTS:
             t0 = time.time()
             if best:
                 a, _, wa = chat.reply_best(cpu, tok, q, chat.TEMP.get(key, 0.8), 4.0, rng, n_best=cpu.n_best)
