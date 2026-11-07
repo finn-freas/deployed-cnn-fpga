@@ -167,3 +167,36 @@ def test_main_load_missing_image_names_the_file(monkeypatch, tmp_path):
 def test_missing_port_gives_clear_error(tmp_path):
     with pytest.raises(ConnectionError, match="cannot open the serial port"):
         link.Link(port=str(tmp_path / "ttyMissing"))
+
+
+class LoadStub:
+    def __init__(self, remote):
+        self.remote = remote
+
+    def write_bytes(self, addr, data, progress=None):
+        if progress:
+            progress(len(data) // 8, len(data) // 8)
+
+    def checksum(self, addr, n):
+        return self.remote
+
+
+def run_load(monkeypatch, tmp_path, remote):
+    img = bytes(range(16))
+    (tmp_path / "m_board.sdram.bin").write_bytes(img)
+    stub = LoadStub(link.checksum(img) if remote is None else remote)
+    monkeypatch.setattr(link, "Link", lambda: stub)
+    monkeypatch.setattr(sys, "argv", ["link.py", "load", str(tmp_path / "m_board")])
+    link.main()
+
+
+def test_main_load_succeeds_when_the_checksums_match(monkeypatch, tmp_path, capsys):
+    run_load(monkeypatch, tmp_path, None)
+    assert "checksum OK" in capsys.readouterr().out
+
+
+def test_main_load_exits_nonzero_on_checksum_mismatch(monkeypatch, tmp_path, capsys):
+    with pytest.raises(SystemExit) as e:
+        run_load(monkeypatch, tmp_path, 1)
+    assert e.value.code == 1
+    assert "MISMATCH" in capsys.readouterr().out

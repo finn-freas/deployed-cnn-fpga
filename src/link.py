@@ -183,6 +183,8 @@ def main():
         want, got = checksum(img), link.checksum(0, -(-len(img) // 8))
         print(f"\nuploaded {len(img) / 2 ** 20:.2f} MB in {dt:.1f}s ({len(img) / dt / 1e3:.0f} KB/s), "
               f"checksum {'OK' if want == got else f'MISMATCH {got:#x} != {want:#x}'}")
+        if want != got:
+            sys.exit(1)
 
 
 if __name__ == "__main__":
